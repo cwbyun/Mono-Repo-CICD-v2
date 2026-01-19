@@ -433,7 +433,6 @@ class MainWindow(QMainWindow):
 
 
 
-
 # --- 애플리케이션 실행 코드 ---
 if __name__ == "__main__":
     app = QApplication(sys.argv)
