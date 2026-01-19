@@ -161,20 +161,20 @@ jobs:
       - name: Set Environment Variables
         run: |
           if [ "${{ matrix.value }}" == "program-smdaq-204-setup" ]; then
-            echo "COPY_FOLDER=/home/cwbyun/DPS/Programs/SMDAQ-204-Setup/" >> $GITHUB_ENV
+            echo "COPY_FOLDER=/home/cwbyun/Programs/SMDAQ-204-Setup/" >> $GITHUB_ENV
             echo "FILENAME=SMDAQ-204-Setup-v1.2.0" >> $GITHUB_ENV
           elif [ "${{ matrix.value }}" == "program-rs485-gui" ]; then
-            echo "COPY_FOLDER=/home/cwbyun/DPS/Programs/RS485-GUI/" >> $GITHUB_ENV
+            echo "COPY_FOLDER=/home/cwbyun/Programs/RS485-GUI/" >> $GITHUB_ENV
             echo "FILENAME=RS485-GUI-v1.0.0" >> $GITHUB_ENV
           # 여기에 다른 프로그램에 대한 elif 조건을 계속 추가할 수 있습니다.
           elif [ "${{ matrix.value }}" == "program-real-time-data-tracing" ]; then
-            echo "COPY_FOLDER=/home/cwbyun/DPS/Programs/Real-Time-Data-Tracing/" >> $GITHUB_ENV
+            echo "COPY_FOLDER=/home/cwbyun/Programs/Real-Time-Data-Tracing/" >> $GITHUB_ENV
             echo "FILENAME=Real-Time-Data-Tracing-v1.0.0" >> $GITHUB_ENV
           elif [ "${{ matrix.value }}" == "program-dpsdl-setup" ]; then
-            echo "COPY_FOLDER=/home/cwbyun/DPS/Programs/DPSDL-01-Setup/" >> $GITHUB_ENV
+            echo "COPY_FOLDER=/home/cwbyun/Programs/DPSDL-01-Setup/" >> $GITHUB_ENV
             echo "FILENAME=DPSDL-01-Setup-v1.0.0" >> $GITHUB_ENV
           elif [ "${{ matrix.value }}" == "apps/program-folder-db" ] || [ "${{ matrix.value }}" == "program-folder-db" ]; then
-            echo "COPY_FOLDER=/home/cwbyun/DPS/Programs/Program-Folder-DB/" >> $GITHUB_ENV
+            echo "COPY_FOLDER=/home/cwbyun/Programs/Program-Folder-DB/" >> $GITHUB_ENV
             echo "FILENAME=Program-Folder-DB-v1.0.0" >> $GITHUB_ENV
           else
             echo "배포 경로가 지정되지 않은 프로그램입니다: ${{ matrix.value }}"
