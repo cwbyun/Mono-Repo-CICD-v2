@@ -156,15 +156,20 @@ class CompanyTab(QWidget):
             data0 = data_str
             print("data0 = ", data0)
 
-            pk1 = int(self.widgets2['pk1'].text())
+            pk1_text = self.widgets2['pk1'].text().strip()
+            pk2_text = self.widgets2['pk2'].text().strip()
+            id1_text = self.widgets2['id1'].text().strip()
+            id2_text = self.widgets2['id2'].text().strip()
 
-            tmp = self.widgets2['pk2'].text()
-            pk2 = int(tmp) if tmp.strip() else 0
+            if not pk1_text or not id1_text:
+                self.main_window.add_log("PK/ID 입력이 필요합니다.")
+                return
+            if not pk1_text.isdigit():
+                self.main_window.add_log("PK는 숫자만 입력 가능합니다.")
+                return
 
-            id1 = int(self.widgets2['id1'].text())
-
-            tmp = self.widgets2['id2'].text()
-            id2 = int(tmp) if tmp.strip() else 0
+            pk1 = int(pk1_text)
+            pk2 = int(pk2_text) if pk2_text else None
 
 
             print("pk1 = ", pk1 )
@@ -173,37 +178,54 @@ class CompanyTab(QWidget):
             print("pk2 = ", id2 )
 
 
-            if pk2==0 and id2==0 :
+            has_pk_range = bool(pk2_text)
+            has_id_range = bool(id2_text)
+            if has_pk_range or has_id_range:
+                if has_pk_range and not pk2_text.isdigit():
+                    self.main_window.add_log("PK 범위 입력은 숫자만 가능합니다.")
+                    return
+                if not id1_text.isdigit() or (has_id_range and not id2_text.isdigit()):
+                    self.main_window.add_log("ID 범위 입력은 숫자만 가능합니다.")
+                    return
+                if has_pk_range and not has_id_range:
+                    self.main_window.add_log("PK to 입력 시 ID to도 필요합니다.")
+                    return
+
+                id1 = int(id1_text)
+                id2 = int(id2_text) if has_id_range else None
+
+                if has_pk_range and has_id_range:
+                    if pk2 is None or id2 is None:
+                        self.main_window.add_log("PK/ID 범위 값이 올바르지 않습니다.")
+                        return
+                    if pk2 - pk1 != id2 - id1:
+                        self.main_window.add_log("PK 범위와 ID 범위 개수가 일치하지 않습니다.")
+                        return
+                    n = id2 - id1
+                    for i in range(0, n + 1):
+                        spk = str(pk1 + i).zfill(2)
+                        sid = self.build_sensor_id(gg, str(id1 + i))
+                        data_str = data0 + spk + sid + ","
+                        command, response = self.common_command( "W", "7D", data_str )
+                elif has_id_range and not has_pk_range:
+                    if id2 is None:
+                        self.main_window.add_log("ID 범위 값이 올바르지 않습니다.")
+                        return
+                    n = id2 - id1
+                    spk = str(pk1).zfill(2)
+                    for i in range(0, n + 1):
+                        sid = self.build_sensor_id(gg, str(id1 + i))
+                        data_str = data0 + spk + sid + ","
+                        command, response = self.common_command( "W", "7D", data_str )
+            else:
                 spk = str(pk1).zfill(2)
-                sid = str(id1)
-                data_str = data0 + spk + gg.replace("-","")  + sid + ","
+                sid = self.build_sensor_id(gg, id1_text)
+                if not sid:
+                    self.main_window.add_log("ID 입력이 올바르지 않습니다.")
+                    return
+                data_str = data0 + spk + sid + ","
                 print("data_str = ", data_str )
                 command, response = self.common_command( "W", "7D", data_str )
-
-            elif pk2!=0 and id2!=0 :
-
-                if pk2-pk1 == id2-id1 :
-                    n = id2-id1
-                    print("n = ", n )
-                    for i in range(0,n+1):
-                        spk = str(pk1+i).zfill(2)
-                        sid = str(id1+i)
-
-                        data_str = data0 + spk + gg.replace("-","")  + sid + ","
-                        print("data_str = ", data_str )
-
-                        command, response = self.common_command( "W", "7D", data_str )
-
-            elif pk2==0 and id2!=0 :
-                    n = id2-id1
-                    print("n = ", n )
-                    spk = str(pk1).zfill(2)
-                    for i in range(0,n+1):
-                        sid = str(id1+i)
-
-                        data_str = data0 + spk + gg.replace("-","")  + sid + ","
-                        print("data_str = ", data_str )
-                        command, response = self.common_command( "W", "7D", data_str )
 
         
             self.sensor_id_get_btn()
@@ -818,6 +840,17 @@ class CompanyTab(QWidget):
 
     def get_model_name( self, company_num, model_num ):
         return COMPANY_DATA[company_num-1]["models"][model_num-1]
+
+    def build_sensor_id(self, model_text: str, raw_id: str) -> str:
+        raw = raw_id.strip()
+        if not raw:
+            return ""
+        model_prefix = model_text.replace("-", "")
+        if raw.upper().startswith(model_prefix.upper()):
+            return raw
+        if raw.isdigit():
+            return model_prefix + raw
+        return raw
 
 
 
