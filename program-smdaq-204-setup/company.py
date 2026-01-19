@@ -8,6 +8,7 @@ from communication import *
 from utils import *
 import protocol as ptcl
 import time
+import re
 
 # 통합된 업체 및 모델 데이터 구조
 COMPANY_DATA = [
@@ -161,62 +162,70 @@ class CompanyTab(QWidget):
             id1_text = self.widgets2['id1'].text().strip()
             id2_text = self.widgets2['id2'].text().strip()
 
+            if pk2_text == "0":
+                pk2_text = ""
+            if id2_text == "0":
+                id2_text = ""
+
             if not pk1_text or not id1_text:
                 self.main_window.add_log("PK/ID 입력이 필요합니다.")
                 return
             if not pk1_text.isdigit():
                 self.main_window.add_log("PK는 숫자만 입력 가능합니다.")
                 return
+            if pk2_text and not pk2_text.isdigit():
+                self.main_window.add_log("PK 범위 입력은 숫자만 가능합니다.")
+                return
+            if pk2_text and not id2_text:
+                self.main_window.add_log("PK to 입력 시 ID to도 필요합니다.")
+                return
 
             pk1 = int(pk1_text)
             pk2 = int(pk2_text) if pk2_text else None
+            id1_parsed = self.parse_sensor_id(gg, id1_text)
+            if not id1_parsed:
+                self.main_window.add_log("ID 형식이 올바르지 않습니다. (예: 1001, STM-1001)")
+                return
 
 
             print("pk1 = ", pk1 )
             print("pk2 = ", pk2 )
-            print("pk1 = ", id1 )
-            print("pk2 = ", id2 )
 
 
-            has_pk_range = bool(pk2_text)
-            has_id_range = bool(id2_text)
-            if has_pk_range or has_id_range:
-                if has_pk_range and not pk2_text.isdigit():
-                    self.main_window.add_log("PK 범위 입력은 숫자만 가능합니다.")
-                    return
-                if not id1_text.isdigit() or (has_id_range and not id2_text.isdigit()):
-                    self.main_window.add_log("ID 범위 입력은 숫자만 가능합니다.")
-                    return
-                if has_pk_range and not has_id_range:
-                    self.main_window.add_log("PK to 입력 시 ID to도 필요합니다.")
+            if id2_text:
+                id2_parsed = self.parse_sensor_id(gg, id2_text)
+                if not id2_parsed:
+                    self.main_window.add_log("ID to 형식이 올바르지 않습니다. (예: 1003, STM-1003)")
                     return
 
-                id1 = int(id1_text)
-                id2 = int(id2_text) if has_id_range else None
+                id1_prefix, id1_num, id1_width = id1_parsed
+                id2_prefix, id2_num, id2_width = id2_parsed
+                if id1_prefix.upper() != id2_prefix.upper():
+                    self.main_window.add_log("ID 접두어가 일치하지 않습니다.")
+                    return
+                if id1_width and id2_width and id1_width != id2_width:
+                    self.main_window.add_log("ID 자리수가 일치하지 않습니다. (예: 001 ~ 010)")
+                    return
+                if id2_num < id1_num:
+                    self.main_window.add_log("ID 범위가 올바르지 않습니다.")
+                    return
 
-                if has_pk_range and has_id_range:
-                    if pk2 is None or id2 is None:
-                        self.main_window.add_log("PK/ID 범위 값이 올바르지 않습니다.")
+                id_width = id1_width if id1_width else id2_width
+                count = id2_num - id1_num
+                if pk2 is not None:
+                    if pk2 < pk1:
+                        self.main_window.add_log("PK 범위가 올바르지 않습니다.")
                         return
-                    if pk2 - pk1 != id2 - id1:
+                    if pk2 - pk1 != count:
                         self.main_window.add_log("PK 범위와 ID 범위 개수가 일치하지 않습니다.")
                         return
-                    n = id2 - id1
-                    for i in range(0, n + 1):
-                        spk = str(pk1 + i).zfill(2)
-                        sid = self.build_sensor_id(gg, str(id1 + i))
-                        data_str = data0 + spk + sid + ","
-                        command, response = self.common_command( "W", "7D", data_str )
-                elif has_id_range and not has_pk_range:
-                    if id2 is None:
-                        self.main_window.add_log("ID 범위 값이 올바르지 않습니다.")
-                        return
-                    n = id2 - id1
-                    spk = str(pk1).zfill(2)
-                    for i in range(0, n + 1):
-                        sid = self.build_sensor_id(gg, str(id1 + i))
-                        data_str = data0 + spk + sid + ","
-                        command, response = self.common_command( "W", "7D", data_str )
+
+                spk_fixed = str(pk1).zfill(2)
+                for i in range(0, count + 1):
+                    spk = str(pk1 + i).zfill(2) if pk2 is not None else spk_fixed
+                    sid = self.format_sensor_id(id1_prefix, id1_num + i, id_width)
+                    data_str = data0 + spk + sid + ","
+                    command, response = self.common_command( "W", "7D", data_str )
             else:
                 spk = str(pk1).zfill(2)
                 sid = self.build_sensor_id(gg, id1_text)
@@ -842,15 +851,53 @@ class CompanyTab(QWidget):
         return COMPANY_DATA[company_num-1]["models"][model_num-1]
 
     def build_sensor_id(self, model_text: str, raw_id: str) -> str:
+        parsed = self.parse_sensor_id(model_text, raw_id)
+        if not parsed:
+            return ""
+        prefix, number, width = parsed
+        return self.format_sensor_id(prefix, number, width)
+
+    def format_sensor_id(self, prefix: str, number: int, width: int) -> str:
+        num_str = str(number)
+        if width:
+            num_str = num_str.zfill(width)
+        return f"{prefix}{num_str}"
+
+    def parse_sensor_id(self, model_text: str, raw_id: str):
         raw = raw_id.strip()
         if not raw:
-            return ""
+            return None
+
         model_prefix = model_text.replace("-", "")
-        if raw.upper().startswith(model_prefix.upper()):
-            return raw
+
         if raw.isdigit():
-            return model_prefix + raw
-        return raw
+            return (model_prefix, int(raw), 0)
+
+        raw_no_sep = raw.replace("-", "").replace(" ", "")
+        if raw_no_sep.upper().startswith(model_prefix.upper()) and len(raw_no_sep) > len(model_prefix):
+            suffix = raw_no_sep[len(model_prefix):]
+            if suffix.isdigit():
+                width = len(suffix) if len(suffix) > 1 and suffix.startswith("0") else 0
+                return (model_prefix, int(suffix), width)
+
+        match = re.match(r'^(.*?)(\d+)$', raw)
+        if not match:
+            return None
+
+        prefix_raw = match.group(1)
+        num_str = match.group(2)
+        if not num_str:
+            return None
+
+        prefix_norm = prefix_raw.replace("-", "").replace(" ", "")
+        if not prefix_norm:
+            send_prefix = model_prefix
+        else:
+            send_prefix = prefix_norm
+
+        number = int(num_str)
+        width = len(num_str) if len(num_str) > 1 and num_str.startswith("0") else 0
+        return (send_prefix, number, width)
 
 
 
