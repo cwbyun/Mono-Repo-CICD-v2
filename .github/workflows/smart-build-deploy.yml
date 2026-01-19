@@ -1,0 +1,217 @@
+name: Smart Build (Windows) & Deploy to NAS
+
+on:
+  # 'main' 브랜치에 코드가 push 될 때 워크플로우를 실행합니다.
+  push:
+    branches: [ "main" ]
+
+jobs:
+  # JOB 1: 변경된 프로그램 폴더를 감지하는 작업
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      # 'matrix'라는 이름으로 다음 Job에 결과물을 전달합니다.
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      # 소스코드를 체크아웃합니다. fetch-depth: 0으로 전체 히스토리를 가져와야
+      # 이전 커밋과 비교하여 변경 사항을 정확히 감지할 수 있습니다.
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 'tj-actions/changed-files' 액션을 사용해 변경된 폴더 목록을 찾습니다.
+      - name: Find changed directories
+        id: changes
+        uses: tj-actions/changed-files@v44
+        with:
+          # 감시할 폴더 패턴을 지정합니다. 'program-'으로 시작하는 모든 폴더를 대상으로 합니다.
+          files: |
+            program-*/**
+
+      # 변경된 파일 목록에서 최상위 program-* 디렉터리를 추출해 JSON matrix를 생성합니다.
+      - name: Build matrix JSON
+        id: set-matrix
+        shell: bash
+        run: |
+          files="${{ steps.changes.outputs.all_changed_files }}"
+          if [ -z "$files" ]; then
+            echo "matrix=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          dirs=$(printf "%s\n" "$files" | awk -F/ '
+            BEGIN{OFS="/"}
+            /^program-/{print $1}
+          ' | sort -u)
+          if [ -z "$dirs" ]; then
+            echo "matrix=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          json="["
+          for d in $dirs; do
+            json="$json{\"value\":\"$d\"},"
+          done
+          json="${json%,}]"
+          echo "matrix=$json" >> "$GITHUB_OUTPUT"
+
+  # JOB 2: Windows 환경에서 프로그램을 빌드하는 작업
+  build-on-windows:
+    # 'detect-changes' Job이 성공적으로 끝나야 실행됩니다.
+    needs: detect-changes
+    # 'detect-changes' Job의 결과물(matrix)이 비어있지 않을 때만 실행합니다.
+    # 즉, 변경된 프로그램이 있을 때만 빌드를 진행하여 리소스를 절약합니다.
+    if: ${{ (needs.detect-changes.outputs.matrix || '[]') != '[]' }}
+    # 파이썬 프로젝트 폴더 목록을 배열(JSON 문자열)로 정의하고, 조건문에서 contains + fromJson으로 간결하게 사용합니다.
+    env:
+      PY_PROJECTS: '["program-smdaq-204-setup","program-rs485-gui","program-real-time-data-tracing","program-dpsdl-setup","program-folder-db"]'
+    
+    runs-on: windows-latest
+    strategy:
+      # 'detect-changes' Job에서 전달받은 JSON 목록으로 빌드 대상을 동적으로 생성합니다.
+      # 예를 들어 2개의 폴더가 변경되었다면, 2개의 빌드 작업이 병렬로 실행됩니다.
+      matrix:
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix || '[]') }}
+        
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+
+      # ====================================================================
+      # ▼▼▼ 파이썬 프로젝트 빌드 단계 (조건부 실행) ▼▼▼
+      # ====================================================================
+      - name: Build Python Project (Python family)
+        # 현재 처리 중인 폴더가 파이썬 프로젝트 목록에 포함될 때만 실행
+        if: contains(fromJson(env.PY_PROJECTS), matrix.value)
+        run: echo "Starting build for Python project ${{ matrix.value }}"
+
+      - name: Derive App Name
+        if: contains(fromJson(env.PY_PROJECTS), matrix.value)
+        id: app
+        shell: bash
+        run: |
+          name=$(basename '${{ matrix.value }}')
+          echo "APP_NAME=$name" >> "$GITHUB_ENV"
+          echo "app_name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Python Environment
+        if: contains(fromJson(env.PY_PROJECTS), matrix.value)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install Python Dependencies
+        if: contains(fromJson(env.PY_PROJECTS), matrix.value)
+        run: |
+          cd ${{ matrix.value }}
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          # requirements.txt가 있다면 주석을 해제하세요.
+          pip install -r requirements.txt
+          cd ..
+
+      - name: Build Python Executable with PyInstaller
+        if: contains(fromJson(env.PY_PROJECTS), matrix.value)
+        run: |
+          cd ${{ matrix.value }}
+          pyinstaller --onefile --windowed --name $env:APP_NAME main.py
+          cd ..
+
+      # 빌드 결과물을 아티팩트로 업로드합니다. (PyInstaller 산출물 기준: dist)
+      - name: Upload Windows executable as an artifact
+        if: contains(fromJson(env.PY_PROJECTS), matrix.value)
+        uses: actions/upload-artifact@v4
+        with:
+          # 아티팩트 이름을 'build-output-프로그램명'으로 지정하여 서로 겹치지 않게 합니다.
+          name: build-output-${{ steps.app.outputs.app_name }}
+          path: ${{ matrix.value }}/dist/${{ steps.app.outputs.app_name }}.exe
+
+
+
+  # JOB 3: 내부망 NAS에 결과물을 배포하는 작업
+  deploy-to-nas:
+    needs: [detect-changes, build-on-windows]
+    if: ${{ (needs.detect-changes.outputs.matrix || '[]') != '[]' }}
+    runs-on: self-hosted
+
+
+
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix || '[]') }}
+
+    steps:
+      - name: Derive App Name
+        id: app
+        shell: bash
+        run: |
+          name=$(basename '${{ matrix.value }}')
+          echo "APP_NAME=$name" >> "$GITHUB_ENV"
+          echo "app_name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output-${{ steps.app.outputs.app_name }}
+          path: .
+
+
+
+      # 💡 [추가] 프로그램 이름에 따라 환경 변수를 동적으로 설정하는 단계
+      - name: Set Environment Variables
+        run: |
+          if [ "${{ matrix.value }}" == "program-smdaq-204-setup" ]; then
+            echo "COPY_FOLDER=/home/cwbyun/DPS/Programs/SMDAQ-204-Setup/" >> $GITHUB_ENV
+            echo "FILENAME=SMDAQ-204-Setup-v1.2.0" >> $GITHUB_ENV
+          elif [ "${{ matrix.value }}" == "program-rs485-gui" ]; then
+            echo "COPY_FOLDER=/home/cwbyun/DPS/Programs/RS485-GUI/" >> $GITHUB_ENV
+            echo "FILENAME=RS485-GUI-v1.0.0" >> $GITHUB_ENV
+          # 여기에 다른 프로그램에 대한 elif 조건을 계속 추가할 수 있습니다.
+          elif [ "${{ matrix.value }}" == "program-real-time-data-tracing" ]; then
+            echo "COPY_FOLDER=/home/cwbyun/DPS/Programs/Real-Time-Data-Tracing/" >> $GITHUB_ENV
+            echo "FILENAME=Real-Time-Data-Tracing-v1.0.0" >> $GITHUB_ENV
+          elif [ "${{ matrix.value }}" == "program-dpsdl-setup" ]; then
+            echo "COPY_FOLDER=/home/cwbyun/DPS/Programs/DPSDL-01-Setup/" >> $GITHUB_ENV
+            echo "FILENAME=DPSDL-01-Setup-v1.0.0" >> $GITHUB_ENV
+          elif [ "${{ matrix.value }}" == "apps/program-folder-db" ] || [ "${{ matrix.value }}" == "program-folder-db" ]; then
+            echo "COPY_FOLDER=/home/cwbyun/DPS/Programs/Program-Folder-DB/" >> $GITHUB_ENV
+            echo "FILENAME=Program-Folder-DB-v1.0.0" >> $GITHUB_ENV
+          else
+            echo "배포 경로가 지정되지 않은 프로그램입니다: ${{ matrix.value }}"
+            exit 1
+          fi
+
+
+
+      - name: Deploy Executable to NAS
+        # 💡 [추가] 환경 변수가 설정되었는지 확인하는 조건
+        if: env.COPY_FOLDER
+        run: |
+          echo "Deploying ${APP_NAME}.exe to ${{ env.COPY_FOLDER }}${{ env.FILENAME }}.exe"
+          
+          # 폴더가 없으면 생성 (안전장치)
+          mkdir -p ${{ env.COPY_FOLDER }}
+          
+          # 💡 빌드된 실행 파일을 아티팩트에서 검색해 NAS로 이동(원본 삭제)
+          SRC=$(find . -type f -name "${APP_NAME}.exe" -print -quit)
+          if [ -z "$SRC" ]; then
+            echo "Executable not found after download: ${APP_NAME}.exe"
+            echo "Available executables under current directory:"
+            find . -maxdepth 5 -type f -name "*.exe" || true
+            exit 1
+          fi
+          mv "$SRC" "${{ env.COPY_FOLDER }}${{ env.FILENAME }}.exe"
+          
+          echo "배포가 완료되었습니다."
+
+
+      
+      # ====================================================================
+      # ▲▲▲ 파이썬 프로젝트 배포 단계 끝 ▲▲▲
+      # ====================================================================
+      
+      # 여기에 다른 프로젝트 배포 단계를 추가할 수 있습니다.
+      # - name: Deploy Go Executable
+      #   if: matrix.value == 'program-other-go-app'
+      #   run: |
+      #     echo "Go App을 배포합니다..."
