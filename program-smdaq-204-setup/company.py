@@ -24,6 +24,8 @@ COMPANY_DATA = [
     {"name": "다음테크", "models": ["INT-7800D", "INT-8100"]},
 ]
 
+
+
 class CompanyTab(QWidget):
     def __init__(self, parent):
         """
