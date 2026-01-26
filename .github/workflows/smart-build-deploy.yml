@@ -63,7 +63,7 @@ jobs:
     if: ${{ (needs.detect-changes.outputs.matrix || '[]') != '[]' }}
     # 파이썬 프로젝트 폴더 목록을 배열(JSON 문자열)로 정의하고, 조건문에서 contains + fromJson으로 간결하게 사용합니다.
     env:
-      PY_PROJECTS: '["program-smdaq-204-setup","program-rs485-gui","program-real-time-data-tracing","program-dpsdl-setup","program-folder-db"]'
+      PY_PROJECTS: '["program-smdaq-204-setup","program-rs485-gui","program-real-time-data-tracing","program-dpsdl-setup","program-folder-db", "program-gerber2dxf"]'
     
     runs-on: windows-latest
     strategy:
@@ -167,6 +167,9 @@ jobs:
             echo "COPY_FOLDER=/home/cwbyun/Programs/RS485-GUI/" >> $GITHUB_ENV
             echo "FILENAME=RS485-GUI-v1.0.0" >> $GITHUB_ENV
           # 여기에 다른 프로그램에 대한 elif 조건을 계속 추가할 수 있습니다.
+          elif [ "${{ matrix.value }}" == "program-gerber2dxf" ]; then
+            echo "COPY_FOLDER=/home/cwbyun/Programs/Gerber2dxf/" >> $GITHUB_ENV
+            echo "FILENAME=Gerber2dxf-v1.0" >> $GITHUB_ENV
           elif [ "${{ matrix.value }}" == "program-real-time-data-tracing" ]; then
             echo "COPY_FOLDER=/home/cwbyun/Programs/Real-Time-Data-Tracing/" >> $GITHUB_ENV
             echo "FILENAME=Real-Time-Data-Tracing-v1.0.0" >> $GITHUB_ENV
