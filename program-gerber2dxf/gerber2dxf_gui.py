@@ -18,6 +18,7 @@ from gerbonara import GerberFile
 from gerbonara.graphic_objects import Line, Arc, Region, Flash
 
 
+
 # 레이어별 색상 정의
 LAYER_COLORS = {
     'GTL': 1,    # Red - Top Copper
