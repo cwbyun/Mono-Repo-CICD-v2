@@ -1,0 +1,9 @@
+# Gerber to DXF Converter Dependencies
+# Desktop GUI and CLI version
+
+# Core libraries (필수)
+gerbonara>=1.0.0
+ezdxf>=1.0.0
+
+# Web GUI 사용 시에만 필요 (선택사항)
+# streamlit>=1.28.0
