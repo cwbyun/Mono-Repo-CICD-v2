@@ -11,20 +11,62 @@ import time
 import re
 
 # 통합된 업체 및 모델 데이터 구조
+# id_format: {"prefix": "접두어", "digits": 자릿수} - 고정 형식이 있는 경우
 COMPANY_DATA = [
     {"name": "디피에스글로벌", "models": ["DTA-01", "DP-17"]},
-    {"name": "주원엔지니어링", "models": ["JTA-01", "JW-17"]},
-    {"name": "STR", "models": ["STM-01", "STW-01"]},
-    {"name": "G-SEN", "models": ["GSD-9100", "GSD-7000", "GSD-6100"]},
-    {"name": "APM-Tech", "models": ["AT-10", "WT-1000", "INT-7300"]},
-    {"name": "성진지오텍", "models": ["SJ-2001", "SJ-4200", "SJ-4700"]},
+    {
+        "name": "주원엔지니어링",
+        "models": ["JTA-01", "JW-17"],
+        "id_format": {
+            "JW-17": {"prefix": "", "digits": 6, "user_prefix": True, "prefix_options": ["", "JW17"]}
+        }
+    },
+    {
+        "name": "STR",
+        "models": ["STM-01", "STW-01"],
+        "id_format": {
+            "STM-01": {"prefix": "", "digits": 0},
+            "STW-01": {"prefix": "", "digits": 0}
+        }
+    },
+    {
+        "name": "G-SEN",
+        "models": ["GSD-9100", "GSD-7000", "GSD-6100"],
+        "id_format": {
+            "GSD-7000": {"prefix": "IN", "digits": 5, "prefix_options": ["IN"]},
+            "GSD-6100": {"prefix": "", "digits": 5, "user_prefix": True, "prefix_options": ["", "WI", "AN"]}
+        }
+    },
+    {
+        "name": "APM-Tech",
+        "models": ["AT-10", "WT-1000", "INT-7300"],
+        "id_format": {
+            "AT-10": {"prefix": "", "digits": 5, "user_prefix": True, "prefix_options": ["", "ET"]},
+            "WT-1000": {"prefix": "", "digits": 5, "user_prefix": True, "prefix_options": ["", "WD"]},
+            "INT-7300": {"prefix": "", "digits": 5, "user_prefix": True, "prefix_options": ["", "WD"]}
+        }
+    },
+    {
+        "name": "성진지오텍",
+        "models": ["SJ-2001", "SJ-4200", "SJ-4700"],
+        "id_format": {
+            "SJ-2001": {"prefix": "", "digits": 0},
+            "SJ-4200": {"prefix": "", "digits": 0},
+            "SJ-4700": {"prefix": "", "digits": 0}
+        }
+    },
     {"name": "하이드로넷", "models": ["MK-21"]},
     {"name": "신호시스템", "models": ["SHN530-2"]},
     {"name": "리온테크", "models": ["SCA126V-10", "HCA526V-10", "ACA626V-10"]},
-    {"name": "다음테크", "models": ["INT-7800D", "INT-8100"]},
+    {
+        "name": "다음테크",
+        "models": ["INT-7800D", "INT-8100"],
+        "id_format": {
+            "INT-7800D": {"prefix": "", "digits": 5, "user_prefix": True, "prefix_options": ["", "WD"]},
+            "INT-8100": {"prefix": "", "digits": 5, "user_prefix": True, "prefix_options": ["", "TP"]}
+        }
+    },
 ]
-
-
 
 class CompanyTab(QWidget):
     def __init__(self, parent):
@@ -78,6 +120,7 @@ class CompanyTab(QWidget):
             {'type': 'combo_box', 'label': 'Line:', 'name': 'line', 'option': ["1","2","3","4"]},
             {'type': 'combo_box', 'label': '업체 선택:', 'name': 'company', 'option': company_options},
             {'type': 'combo_box', 'label': '모델 선택:', 'name': 'model', 'option': ['-']},
+            {'type': 'combo_box', 'label': '접두어:', 'name': 'prefix', 'option': ['-']},
             {'type': 'input_pair', 'label': 'PK from:', 'name': 'pk1'},
             {'type': 'input_pair', 'label': 'PK to:', 'name': 'pk2'},
             {'type': 'input_pair', 'label': 'ID from:', 'name': 'id1'},
@@ -90,6 +133,8 @@ class CompanyTab(QWidget):
         group2, self.widgets2 = create_dynamic_group('Sensor ID (cmd=7D)', layout2_config, input_width=100)
 
         self.widgets2['model'].setMinimumWidth(100)
+        self.widgets2['prefix'].setMinimumWidth(80)
+        self.widgets2['prefix'].setEditable(True)  # 직접 입력 가능하도록
         self.widgets2['pk1'].setMinimumWidth(30)
         self.widgets2['pk2'].setMinimumWidth(30)
         self.widgets2['id1'].setMinimumWidth(30)
@@ -129,6 +174,7 @@ class CompanyTab(QWidget):
         self.widgets2['toggle_all_btn'].clicked.connect(self.toggle_all_ids)
         self.widgets2['delete_selected_btn'].clicked.connect(self.delete_selected_ids)
         self.widgets2['company'].currentTextChanged.connect(self.on_company_changed2)
+        self.widgets2['model'].currentTextChanged.connect(self.on_model_changed2)
 
 
 
@@ -159,6 +205,9 @@ class CompanyTab(QWidget):
             data0 = data_str
             print("data0 = ", data0)
 
+            user_prefix = self.widgets2['prefix'].currentText().strip()
+            if user_prefix == "(없음)" or user_prefix == "-":
+                user_prefix = ""
             pk1_text = self.widgets2['pk1'].text().strip()
             pk2_text = self.widgets2['pk2'].text().strip()
             id1_text = self.widgets2['id1'].text().strip()
@@ -184,7 +233,7 @@ class CompanyTab(QWidget):
 
             pk1 = int(pk1_text)
             pk2 = int(pk2_text) if pk2_text else None
-            id1_parsed = self.parse_sensor_id(gg, id1_text)
+            id1_parsed = self.parse_sensor_id(gg, id1_text, user_prefix)
             if not id1_parsed:
                 self.main_window.add_log("ID 형식이 올바르지 않습니다. (예: 1001, STM-1001)")
                 return
@@ -195,7 +244,7 @@ class CompanyTab(QWidget):
 
 
             if id2_text:
-                id2_parsed = self.parse_sensor_id(gg, id2_text)
+                id2_parsed = self.parse_sensor_id(gg, id2_text, user_prefix)
                 if not id2_parsed:
                     self.main_window.add_log("ID to 형식이 올바르지 않습니다. (예: 1003, STM-1003)")
                     return
@@ -230,7 +279,7 @@ class CompanyTab(QWidget):
                     command, response = self.common_command( "W", "7D", data_str )
             else:
                 spk = str(pk1).zfill(2)
-                sid = self.build_sensor_id(gg, id1_text)
+                sid = self.build_sensor_id(gg, id1_text, user_prefix)
                 if not sid:
                     self.main_window.add_log("ID 입력이 올바르지 않습니다.")
                     return
@@ -291,10 +340,10 @@ class CompanyTab(QWidget):
             table.setColumnWidth(1, 250)  # Company 컬럼
             table.setColumnWidth(2, 200)  # Model 컬럼
             table.setColumnWidth(3, 100)  # PK
-            table.setColumnWidth(4, 200)  # ID
-            table.setColumnWidth(5, 50)  # Modify Button
-            table.setColumnWidth(6, 50)  # Delete Button
-            table.setColumnWidth(7, 50)  # Select
+            table.setColumnWidth(4, 200)  # ID (접두어+숫자)
+            table.setColumnWidth(5, 50)   # Modify Button
+            table.setColumnWidth(6, 50)   # Delete Button
+            table.setColumnWidth(7, 50)   # Select
 
             for i in range(n):
                 print(parts[i])
@@ -507,7 +556,7 @@ class CompanyTab(QWidget):
         widget.setLayout(layout)
 
         # 5는 6번째 컬럼에 넣는 것이다.
-        table.setCellWidget(row, 5, widget)  # 마지막 컬럼에 버튼 삽입
+        table.setCellWidget(row, 5, widget)  # 수정 버튼 삽입
         return
 
 
@@ -515,7 +564,7 @@ class CompanyTab(QWidget):
         btn = QPushButton("삭제")
 
         btn.clicked.connect(lambda del_action, b=btn: self.delete_id_row(table,b, row))
-        
+
 
         # 버튼을 셀에 넣기 위해 QWidget + QHBoxLayout 사용
         widget = QWidget()
@@ -524,8 +573,8 @@ class CompanyTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         widget.setLayout(layout)
 
-        # 5는 6번째 컬럼에 넣는 것이다.
-        table.setCellWidget(row, 6, widget)  # 마지막 컬럼에 버튼 삽입
+        # 6은 7번째 컬럼에 넣는 것이다.
+        table.setCellWidget(row, 6, widget)  # 삭제 버튼 삽입
 
     def delete_selected_ids(self):
         table = getattr(self, "id_table", None)
@@ -849,11 +898,23 @@ class CompanyTab(QWidget):
     def get_company_name( self, company_num ):
         return COMPANY_DATA[company_num-1]["name"]
 
-    def get_model_name( self, company_num, model_num ):
+    def get_model_name(self, company_num, model_num, sensor_id=None):
+        """
+        company_num: 회사 번호 (1부터 시작)
+        model_num: 모델 번호 (1부터 시작)
+        sensor_id: 센서 ID (사용 안 함, 호환성 유지용)
+        """
         return COMPANY_DATA[company_num-1]["models"][model_num-1]
 
-    def build_sensor_id(self, model_text: str, raw_id: str) -> str:
-        parsed = self.parse_sensor_id(model_text, raw_id)
+    def get_model_id_format(self, model_text: str):
+        """모델명에 해당하는 ID 형식 정보를 반환"""
+        for company in COMPANY_DATA:
+            if "id_format" in company and model_text in company["id_format"]:
+                return company["id_format"][model_text]
+        return None
+
+    def build_sensor_id(self, model_text: str, raw_id: str, user_prefix: str = "") -> str:
+        parsed = self.parse_sensor_id(model_text, raw_id, user_prefix)
         if not parsed:
             return ""
         prefix, number, width = parsed
@@ -865,11 +926,62 @@ class CompanyTab(QWidget):
             num_str = num_str.zfill(width)
         return f"{prefix}{num_str}"
 
-    def parse_sensor_id(self, model_text: str, raw_id: str):
+    def parse_sensor_id(self, model_text: str, raw_id: str, user_prefix: str = ""):
         raw = raw_id.strip()
         if not raw:
             return None
 
+        # 모델별 고정 형식 체크
+        id_format = self.get_model_id_format(model_text)
+        if id_format:
+            # 사용자 입력 접두어 우선 사용
+            if user_prefix:
+                fixed_prefix = user_prefix
+                # 접두어가 있으면 자릿수 적용
+                fixed_digits = id_format["digits"]
+            else:
+                fixed_prefix = id_format["prefix"]
+                # 접두어가 없으면 자릿수 무시 (user_prefix 모델의 경우)
+                if id_format.get("user_prefix", False) and not fixed_prefix:
+                    fixed_digits = 0
+                else:
+                    fixed_digits = id_format["digits"]
+
+            # 숫자만 입력된 경우
+            if raw.isdigit():
+                return (fixed_prefix, int(raw), fixed_digits)
+
+            # 전체 ID가 입력된 경우 (예: JW17000001, IN00001, WI00001)
+            raw_no_sep = raw.replace("-", "").replace(" ", "")
+
+            # 입력된 ID에서 접두어 추출
+            match = re.match(r'^([A-Za-z]*)(\d+)$', raw_no_sep)
+            if match:
+                input_prefix = match.group(1)
+                num_str = match.group(2)
+
+                # 사용자가 접두어를 입력했으면 그것을 사용
+                if user_prefix:
+                    use_prefix = user_prefix
+                    use_digits = id_format["digits"]
+                elif input_prefix:
+                    use_prefix = input_prefix
+                    use_digits = id_format["digits"]
+                else:
+                    use_prefix = fixed_prefix
+                    use_digits = fixed_digits
+
+                return (use_prefix, int(num_str), use_digits)
+
+            if fixed_prefix and raw_no_sep.upper().startswith(fixed_prefix.upper()) and len(raw_no_sep) > len(fixed_prefix):
+                suffix = raw_no_sep[len(fixed_prefix):]
+                if suffix.isdigit():
+                    return (fixed_prefix, int(suffix), fixed_digits)
+            elif not fixed_prefix and raw_no_sep.isdigit():
+                # 접두어가 없는 경우 (STR)
+                return (fixed_prefix, int(raw_no_sep), fixed_digits)
+
+        # 기존 로직 (고정 형식이 없는 경우)
         model_prefix = model_text.replace("-", "")
 
         if raw.isdigit():
@@ -920,6 +1032,41 @@ class CompanyTab(QWidget):
 
     def on_company_changed2(self, company_text):
         self._update_model_combo(company_text, self.widgets2['model'])
+
+    def on_model_changed2(self, model_text):
+        """모델 선택 시 접두어 콤보박스 업데이트"""
+        prefix_combo = self.widgets2['prefix']
+        prefix_combo.clear()
+
+        if model_text == '-' or not model_text:
+            prefix_combo.addItem('-')
+            return
+
+        # 현재 선택된 회사 찾기
+        company_text = self.widgets2['company'].currentText()
+        if company_text == '-' or not company_text:
+            prefix_combo.addItem('-')
+            return
+
+        # 회사 인덱스 찾기
+        if company_text.split('-')[0].isdigit():
+            company_idx = int(company_text.split('-')[0])
+            if 0 <= company_idx < len(COMPANY_DATA):
+                company = COMPANY_DATA[company_idx]
+
+                # 모델의 id_format에서 prefix_options 가져오기
+                if "id_format" in company and model_text in company["id_format"]:
+                    id_fmt = company["id_format"][model_text]
+                    if "prefix_options" in id_fmt:
+                        for option in id_fmt["prefix_options"]:
+                            if option == "":
+                                prefix_combo.addItem("(없음)")
+                            else:
+                                prefix_combo.addItem(option)
+                        return
+
+        # 기본값
+        prefix_combo.addItem('-')
 
 
 
