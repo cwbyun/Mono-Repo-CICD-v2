@@ -3,12 +3,14 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QGroupBox, QTableWidget, QTableWidgetItem, QDialog, QComboBox,
     QSizePolicy
 )
+
 from PyQt6.QtCore import Qt
 from communication import *
 from utils import *
 import protocol as ptcl
 import time
 import re
+
 
 # 통합된 업체 및 모델 데이터 구조
 # id_format: {"prefix": "접두어", "digits": 자릿수} - 고정 형식이 있는 경우
