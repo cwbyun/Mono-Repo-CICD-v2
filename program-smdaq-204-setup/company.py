@@ -182,18 +182,50 @@ class CompanyTab(QWidget):
 
 
 
+    def get_existing_pks_for_line(self, line_num):
+        """특정 라인의 기존 PK 목록을 반환합니다."""
+        try:
+            data_str = str(line_num)
+            command, response = self.common_command("R", "7D", data_str)
+            is_valid, error_message = check_response(response)
+            if not is_valid:
+                return set()
+
+            ans = trim_string(response, 4, 3)
+            parts = ans.split(",")
+
+            if len(parts) == 0:
+                return set()
+
+            n = int(parts[0][1:3])
+            if n == 0:
+                return set()
+
+            parts[0] = parts[0][3:]
+
+            existing_pks = set()
+            for i in range(n):
+                if len(parts[i]) >= 6:
+                    pk = int(parts[i][4:6])
+                    existing_pks.add(pk)
+
+            return existing_pks
+        except:
+            return set()
+
     def sensor_id_set_btn( self ):
 
         try:
             # Line
-            data_str = str( int(self.widgets2['line'].currentIndex()) )
+            line_num = int(self.widgets2['line'].currentIndex())
+            data_str = str(line_num)
 
             # Company
-            cc = self.widgets2['company'].currentText() 
+            cc = self.widgets2['company'].currentText()
             print( "cc = ", cc )
             ee = self.get_company_index( cc[2:] )
 
-            gg = self.widgets2['model'].currentText() 
+            gg = self.widgets2['model'].currentText()
             ff = self.get_model_index( ee, gg ) + 1
             print("ff = ", ff )
 
@@ -235,6 +267,20 @@ class CompanyTab(QWidget):
 
             pk1 = int(pk1_text)
             pk2 = int(pk2_text) if pk2_text else None
+
+            # PK 중복 체크
+            existing_pks = self.get_existing_pks_for_line(line_num)
+            pks_to_add = set()
+            if pk2 is not None:
+                pks_to_add = set(range(pk1, pk2 + 1))
+            else:
+                pks_to_add = {pk1}
+
+            duplicate_pks = pks_to_add & existing_pks
+            if duplicate_pks:
+                duplicate_list = sorted(list(duplicate_pks))
+                self.main_window.add_log(f"오류: PK 중복 - 이미 존재하는 PK입니다: {duplicate_list}")
+                return
             id1_parsed = self.parse_sensor_id(gg, id1_text, user_prefix)
             if not id1_parsed:
                 self.main_window.add_log("ID 형식이 올바르지 않습니다. (예: 1001, STM-1001)")
@@ -325,10 +371,30 @@ class CompanyTab(QWidget):
                 if widget_to_remove:
                     widget_to_remove.setParent(None)
 
-            if n==0 : 
+            if n==0 :
                 return
 
             parts[0] = parts[0][3:]
+
+            # 데이터 파싱 및 PK 기준 정렬
+            sensor_data = []
+            for i in range(n):
+                company_num = int(parts[i][0:2])
+                model_num   = int(parts[i][2:4])
+                pk_text     = parts[i][4:6]
+                pk          = int(pk_text)
+                sensor_id   = parts[i][6:]
+
+                sensor_data.append({
+                    'company_num': company_num,
+                    'model_num': model_num,
+                    'pk_text': pk_text,
+                    'pk': pk,
+                    'sensor_id': sensor_id
+                })
+
+            # PK 기준으로 정렬
+            sensor_data.sort(key=lambda x: x['pk'])
 
             # 테이블 생성
             table = QTableWidget()
@@ -348,13 +414,14 @@ class CompanyTab(QWidget):
             table.setColumnWidth(7, 50)   # Select
 
             for i in range(n):
-                print(parts[i])
+                data = sensor_data[i]
+                company_num = data['company_num']
+                model_num = data['model_num']
+                pk_text = data['pk_text']
+                pk = data['pk']
+                sensor_id = data['sensor_id']
 
-                company_num = int(parts[i][0:2])
-                model_num   = int(parts[i][2:4])
-                pk_text     = parts[i][4:6]
-                pk          = int(pk_text)
-                sensor_id   = parts[i][6:]
+                print(f"company_num={company_num}, model_num={model_num}, pk={pk}, sensor_id={sensor_id}")
                 #0123 456789 012345
                 #0202 000000 000255
 
@@ -396,7 +463,7 @@ class CompanyTab(QWidget):
 
 
             table.resizeRowsToContents()
-            self.adjust_table_height(table, table.rowCount(), set_max=False)
+            table.setMaximumHeight(400)  # 최대 높이 설정으로 스크롤 가능하게
             self.id_table_layout.addWidget(table)
             self.id_table = table
 
@@ -888,7 +955,7 @@ class CompanyTab(QWidget):
                 self.add_delete_button(table,i)
 
             table.resizeRowsToContents()
-            self.maker_table_height = self.adjust_table_height(table, table.rowCount(), set_max=False)
+            table.setMaximumHeight(300)  # 최대 높이 설정으로 스크롤 가능하게
             self.table_layout.addWidget(table)
 
         except:

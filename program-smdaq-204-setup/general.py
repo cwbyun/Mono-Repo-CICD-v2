@@ -178,18 +178,38 @@ class GeneralTab(QWidget):
 
     def date_time_set_btn( self ):
 
-        #print("clicked")
         data_str = self.dateTime['datetime_date'].date().toString("yyMMdd")
         time_text = (self.dateTime['datetime_time'].text() or '00:00:00').strip()
-        if time_text.count(':') == 1:
-            time_text = f"{time_text}:00"
-        data_str += time_text.replace(':','')
 
-        #command, response = self.data_command( "6", data_str )
+        # 시간에서 시:분:초 추출
+        time_parts = time_text.split(':')
+        if len(time_parts) >= 3:
+            hh = time_parts[0].zfill(2)
+            mm = time_parts[1].zfill(2)
+            ss = time_parts[2].zfill(2)
+        elif len(time_parts) == 2:
+            hh = time_parts[0].zfill(2)
+            mm = time_parts[1].zfill(2)
+            ss = "00"
+        else:
+            hh = "00"
+            mm = "00"
+            ss = "00"
 
+        # 옵션 1: 초 포함 (S6yyMMddHHmmssQ)
+        # data_str += hh + mm + ss
+        # command = ptcl.STX + "6" + data_str + "Q"
+
+        # 옵션 2: 초 제외 (S6yyMMddHHmmQ) - 이 옵션으로 테스트
+        data_str += hh + mm
         command = ptcl.STX + "6" + data_str + "Q"
+
+        self.main_window.add_log(f"전송 >> {command}")
         response = self.main_window.send_command_unified(command)
-        self.main_window.add_log("날짜 시간 Setting은 응답없음.")
+        if response:
+            self.main_window.add_log(f"응답 << {response}")
+        else:
+            self.main_window.add_log("응답 없음 (시간 설정 명령은 응답이 없을 수 있음)")
 
     def read_ntc_time_btn( self ):
         server = self.ntc_server_input.text().strip()

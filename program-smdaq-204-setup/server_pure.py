@@ -217,7 +217,11 @@ class SMDAQServerPure:
                 full_command = command + '''\n'''
                 self.client_socket.sendall(full_command.encode('utf-8'))
                 self._update_activity()
-                self.log(f"명령 전송: '{command}' -> {self.client_address}")
+
+                # 펌웨어 업데이트 명령(SWND, SWNA, SWNT, SWNE)은 로그 생략
+                is_firmware_cmd = command.startswith('SWND') or command.startswith('SWNA') or command.startswith('SWNT') or command.startswith('SWNE')
+                if not is_firmware_cmd:
+                    self.log(f"명령 전송: '{command}' -> {self.client_address}")
 
                 # 3. 응답 수신
                 buffer = bytearray()
@@ -235,7 +239,8 @@ class SMDAQServerPure:
                         break
 
                 response = buffer.decode('utf-8', errors='ignore').strip()
-                self.log(f"응답 수신: '{response}' <- {self.client_address}")
+                if not is_firmware_cmd:
+                    self.log(f"응답 수신: '{response}' <- {self.client_address}")
                 return response
 
             except socket.timeout:

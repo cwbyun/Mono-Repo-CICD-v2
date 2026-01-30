@@ -20,6 +20,10 @@ class UserCommandTab(QWidget):
 
         main_layout = QVBoxLayout(self)
 
+        # 안내 문장 추가
+        info_label = QLabel("[ 안내 ] Enter 키: Send (체크섬 없이 전송) | Checksum+Send 버튼: 체크섬 추가하여 전송")
+        info_label.setStyleSheet("color: #555; font-size: 11px; padding: 5px;")
+        main_layout.addWidget(info_label)
 
         layout1_config = [
                 {'type': 'input_pair', 'label':'Command:', 'name':'command'},
@@ -27,13 +31,14 @@ class UserCommandTab(QWidget):
                 {'type': 'button', 'text':'Send', 'name':'send'},
         ]
         group1, self.widgets1 = create_dynamic_group('Test Write/Read SD Card (cmd=c)', layout1_config, input_width=150 )
-        
+
 
         main_layout.addWidget(group1)
         main_layout.addStretch()
 
         self.widgets1['checksum'].clicked.connect( self.user_command_checksum_btn )
         self.widgets1['send'].clicked.connect( self.user_command_send_btn )
+        self.widgets1['command'].returnPressed.connect( self.user_command_send_btn )
 
 
     def user_command_send_btn( self ):

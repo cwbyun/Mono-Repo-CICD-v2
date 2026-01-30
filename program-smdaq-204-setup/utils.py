@@ -374,17 +374,12 @@ def create_dynamic_group(title, layout_config, options_data=None, input_width=60
             date.setDate(item.get('default_date', QDate.currentDate()))
             date.setFixedWidth(item.get('date_width', 110))
 
-            # 시간(텍스트 입력 + 검증기, 기본 HH:mm)
+            # 시간(텍스트 입력, 자유롭게 편집 가능)
             time_edit = QLineEdit()
             time_format = item.get('time_format', 'HH:mm')
             time_edit.setPlaceholderText(item.get('placeholder', time_format))
             time_edit.setFixedWidth(item.get('time_width', 70))
-            # 24시간 HH:mm 또는 HH:mm:ss 검증 (PyQt6: QRegularExpression, PyQt5: QRegExp)
-            if time_format == 'HH:mm:ss':
-                rx = QRegularExpression(r'^([01]\d|2[0-3]):([0-5]\d):([0-5]\d)$')
-            else:
-                rx = QRegularExpression(r'^([01]\d|2[0-3]):([0-5]\d)$')
-            time_edit.setValidator(QRegularExpressionValidator(rx, time_edit))
+            # validator 제거 - 사용자가 자유롭게 입력 가능
             if 'default_time' in item:
                 time_edit.setText(item['default_time'])  # 예: "00:00" 또는 "23:59"
 

@@ -34,7 +34,7 @@ class MainWindow(QMainWindow):
 
         # --- 1. 윈도우 기본 설정 ---
         self.setWindowTitle("SMDAQ-204 Setup Program")
-        self.setGeometry(100, 100, 1200, 1300)  # x, y, width, height
+        # self.setGeometry(100, 100, 1200, 1300)  # 최대화 모드에서는 주석 처리
         #self.setFixedSize(900, 800)
 
         # --- 시그널-슬롯 연결 ---
@@ -438,5 +438,5 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     window = MainWindow()
-    window.show()
+    window.showMaximized()  # 최대화 상태로 시작
     sys.exit(app.exec())

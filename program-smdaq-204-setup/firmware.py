@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton,
-    QHBoxLayout, QGroupBox, QFileDialog, QProgressBar
+    QHBoxLayout, QGroupBox, QFileDialog, QProgressBar, QApplication
 )
 from PyQt6.QtCore import ( Qt, QTimer )
 from communication import *
@@ -168,8 +168,9 @@ class FirmwareTab(QWidget):
                 # 'SWNB' 명령을 3회 전송
                 for i in range(3):
                     self.main_window.add_log(f"BOOT 모드 진입 시도 ({i+1}/3)...")
+                    QApplication.processEvents()  # UI 응답성 유지
                     cmd, response = self.common_command("W", "N", "B", log=True )
-            
+
                     #print("res = ", response )
                     is_valid, error_message = check_response(response)
                     if not is_valid:
@@ -247,15 +248,20 @@ class FirmwareTab(QWidget):
 
 
             # --- HEX 데이터 라인별 전송 ---
-            self.main_window.add_log("데이터 전송을 시작합니다...")
+            self.main_window.add_log(f"데이터 전송을 시작합니다... (총 {data_line_count}개)")
             self.progress_bar.setMaximum(100) # 프로그레스 바 최대값을 100으로 설정
-            
+
             current_address = None
             processed_count = 0
+            log_interval = 500  # 500개마다 한 번씩 로그
 
             for i, line in enumerate(hex_lines):
                 if not line.startswith(':'):
                     continue
+
+                # UI 응답성 유지 (주기적으로 호출)
+                if i % 10 == 0:  # 10줄마다 한 번씩
+                    QApplication.processEvents()
 
                 record_type = line[7:9]
 
@@ -263,24 +269,29 @@ class FirmwareTab(QWidget):
                 if record_type == '00':
                     data = line[9:-2]
                     data_len_str = str(len(data)).zfill(2)  # HEX 문자열 길이 (10진수 2자리)
-                    if self.send_command_with_retry("W", "N", "D" + data_len_str + data ) == False: 
+                    if self.send_command_with_retry("W", "N", "D" + data_len_str + data ) == False:
                         raise Exception(f"{i+1}번째 라인 데이터 전송 실패")
                     processed_count += 1
+
+                    # 진행 상황 로그 (50개마다)
+                    if processed_count % log_interval == 0:
+                        progress = int((processed_count / data_line_count) * 100)
+                        self.main_window.add_log(f"진행: {processed_count}/{data_line_count} ({progress}%)")
 
                 # 유형 04: 확장 주소 레코드
                 elif record_type == '04':
                     address_data = line[9:-2]
                     if current_address != address_data:
+                        # 확장 주소 로그는 중요하므로 유지
                         self.main_window.add_log(f"확장 주소 설정: 0x{address_data}")
-                        if self.send_command_with_retry("W", "N", "A" + address_data ) == False: 
+                        if self.send_command_with_retry("W", "N", "A" + address_data ) == False:
                             raise Exception(f"{i+1}번째 라인 주소 전송 실패")
                         current_address = address_data
 
-                # 유형 05: 프로그램 시작 주소 (무시)
+                # 유형 05: 프로그램 시작 주소 (무시) - 로그 제거
                 elif record_type == '05':
-                    self.main_window.add_log("프로그램 시작 주소 - 무시")
                     continue
-                    
+
                 # 유형 01: 파일 끝 레코드
                 elif record_type == '01':
                     self.main_window.add_log("파일의 끝(EOF)에 도달했습니다.")
@@ -290,8 +301,10 @@ class FirmwareTab(QWidget):
                 if record_type == '00' and data_line_count > 0:
                     progress = int((processed_count / data_line_count) * 100)
                     self.progress_bar.setValue(progress)
+                    # UI 응답성 유지
+                    QApplication.processEvents()
 
-                time.sleep(0.020)
+                time.sleep(0.005)
 
             # --- 다운로드 완료 명령 전송 ---
             self.main_window.add_log("데이터 전송 완료. 종료 명령을 보냅니다.")
@@ -329,10 +342,12 @@ class FirmwareTab(QWidget):
             ans = trim_string( response, 3, 3 )
             if ans=='0' : return True  # 성공 시 즉시 True 반환
 
-            # 실패 시 로그 남기기
-            self.main_window.add_log(f"응답 오류. {delay}초 후 재시도... ({attempt + 1}/{retries})")
+            # 재시도 로그 제거 - 너무 많은 로그 방지
+            QApplication.processEvents()  # UI 응답성 유지
             time.sleep(delay) # 잠시 대기
 
+        # 최종 실패 시에만 로그
+        self.main_window.add_log(f"명령 전송 실패: {DIR}{CMD} (재시도 {retries}회)")
         return False # 모든 재시도가 실패하면 False 반환
 
 
