@@ -315,6 +315,10 @@ class FirmwareTab(QWidget):
             if ans == '0' :
                 self.main_window.add_log("✅ 펌웨어 업그레이드 성공!")
                 self.progress_bar.setValue(100) # 100% 채우기
+                # 펌웨어 완료 후 서버 중지
+                if self.main_window.server and self.main_window.server.is_running:
+                    self.main_window.add_log("펌웨어 완료: 서버를 중지합니다.")
+                    self.main_window.stop_server()
 
         except Exception as e:
             self.main_window.add_log(f"❌ 펌웨어 전송 중 오류 발생: {e}")

@@ -281,6 +281,15 @@ class GeneralTab(QWidget):
         print("data = ", data_str )
         command, response = self.server_common_command( "W", "R", data_str )
 
+        # Factory Reset 실행 후 서버 중지
+        is_valid, error_message = check_response(response)
+        if is_valid:
+            self.main_window.add_log("Factory Reset 완료: 서버를 중지합니다.")
+            if self.main_window.server and self.main_window.server.is_running:
+                self.main_window.stop_server()
+        else:
+            self.main_window.add_log(f"Factory Reset 응답 오류: {error_message}")
+
 
     def send_version_command(self):
 
