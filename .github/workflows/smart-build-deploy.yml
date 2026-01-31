@@ -162,7 +162,7 @@ jobs:
         run: |
           if [ "${{ matrix.value }}" == "program-smdaq-204-setup" ]; then
             echo "COPY_FOLDER=/home/cwbyun/Develop/999_Programs/00_CICD/programs/SMDAQ-204-Setup/" >> $GITHUB_ENV
-            echo "FILENAME=SMDAQ-204-Setup-v1.3.6" >> $GITHUB_ENV
+            echo "FILENAME=SMDAQ-204-Setup-v1.4.0" >> $GITHUB_ENV
           elif [ "${{ matrix.value }}" == "program-rs485-gui" ]; then
             echo "COPY_FOLDER=/home/cwbyun/Programs/RS485-GUI/" >> $GITHUB_ENV
             echo "FILENAME=RS485-GUI-v1.0.0" >> $GITHUB_ENV
