@@ -24,6 +24,8 @@ from company import CompanyTab
 
 import threading
 
+
+
 class MainWindow(QMainWindow):
     # 스레드 안전한 로깅을 위한 시그널 정의
     log_signal = pyqtSignal(str)
