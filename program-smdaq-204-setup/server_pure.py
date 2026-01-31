@@ -3,6 +3,91 @@ import threading
 import time
 from typing import Optional, Callable
 
+def _normalize_command(command: str) -> str:
+    clean_cmd = command.strip().replace("\n", "").replace("\r", "")
+    if clean_cmd.startswith("S"):
+        clean_cmd = clean_cmd[1:]
+    if clean_cmd.endswith("Q"):
+        clean_cmd = clean_cmd[:-1]
+    return clean_cmd
+
+def _get_end_mode(clean_cmd: str) -> str:
+    if clean_cmd.startswith('E') or clean_cmd.startswith('F'):
+        return "END_STATUS"
+    if (clean_cmd.startswith('3') or clean_cmd.startswith('4') or
+        clean_cmd.startswith('C') or clean_cmd.startswith('D') or
+        clean_cmd.startswith('G') or clean_cmd.startswith('H') or
+        clean_cmd.startswith('B')):
+        return "END"
+    return ""
+
+def _get_command_timeout(command: str) -> tuple:
+    clean_cmd = _normalize_command(command)
+    if (clean_cmd.startswith('3') or clean_cmd.startswith('4') or
+        clean_cmd.startswith('C') or clean_cmd.startswith('D') or
+        clean_cmd.startswith('E') or clean_cmd.startswith('F') or
+        clean_cmd.startswith('G') or clean_cmd.startswith('H') or
+        clean_cmd.startswith('B')):
+        return (10.0, 120.0, True)
+    if clean_cmd.startswith('9') or clean_cmd.startswith('A'):
+        return (3.0, 4.0, False)
+    return (5.0, 8.0, True)
+
+def _line_ending_index(buffer: bytes) -> int:
+    if buffer.endswith(b"\r\n"):
+        return len(buffer) - 2
+    if buffer.endswith(b"\n") or buffer.endswith(b"\r"):
+        return len(buffer) - 1
+    return -1
+
+def _buffer_has_end_line(buffer: bytes) -> bool:
+    end_idx = _line_ending_index(buffer)
+    if end_idx < 3:
+        return False
+    start_idx = end_idx - 3
+    if buffer[start_idx:end_idx] != b"END":
+        return False
+    if start_idx == 0:
+        return True
+    return buffer[start_idx - 1] in (10, 13)
+
+def _buffer_has_end_status(buffer: bytes) -> bool:
+    end_idx = _line_ending_index(buffer)
+    if end_idx < 5:
+        return False
+    start_idx = end_idx - 5
+    suffix = buffer[start_idx:end_idx]
+    if suffix[:3] != b"END":
+        return False
+    if suffix[3] in (10, 13) or suffix[4] in (10, 13):
+        return False
+    if start_idx == 0:
+        return True
+    return buffer[start_idx - 1] in (10, 13)
+
+def _buffer_has_end_marker(buffer: bytes, end_mode: str) -> bool:
+    if not buffer:
+        return False
+    if end_mode == "END":
+        return _buffer_has_end_line(buffer)
+    if end_mode == "END_STATUS":
+        return _buffer_has_end_status(buffer)
+    return False
+
+def _drain_line_buffer(line_buffer: bytearray, on_line) -> bytearray:
+    parts = line_buffer.splitlines(keepends=True)
+    if not parts:
+        return line_buffer
+    if not (parts[-1].endswith(b"\n") or parts[-1].endswith(b"\r")):
+        partial = parts.pop()
+    else:
+        partial = b""
+    for part in parts:
+        text = part.rstrip(b"\r\n").decode("utf-8", errors="replace")
+        if text:
+            on_line(text)
+    return bytearray(partial)
+
 class SMDAQServerPure:
     """
     순수 Python 스레딩만 사용하는 1:1 동기 통신 서버.
@@ -197,11 +282,11 @@ class SMDAQServerPure:
                 self.client_socket = None
                 self.client_address = None
 
-    def query(self, command: str, timeout: float = 5.0) -> Optional[str]:
+    def query(self, command: str, timeout: Optional[float] = None, on_line=None) -> Optional[str]:
         """
         클라이언트에게 동기식으로 명령을 보내고 응답을 기다립니다.
         :param command: 전송할 명령 문자열
-        :param timeout: 응답을 기다릴 최대 시간 (초)
+        :param timeout: 응답을 기다릴 최대 시간 (초), None이면 명령별 기본값 사용
         :return: 클라이언트의 응답 문자열, 에러 또는 타임아웃 시 특정 에러 메시지
         """
         with self._client_lock:
@@ -210,8 +295,17 @@ class SMDAQServerPure:
                 return "[ERROR] Client not connected"
 
             try:
+                if timeout is None:
+                    socket_timeout, max_wait_time, wait_for_etx = _get_command_timeout(command)
+                else:
+                    _, _, wait_for_etx = _get_command_timeout(command)
+                    socket_timeout = timeout
+                    max_wait_time = timeout
+                clean_cmd = _normalize_command(command)
+                end_mode = _get_end_mode(clean_cmd)
+                needs_complete_response = bool(end_mode) or wait_for_etx
                 # 1. 소켓 타임아웃 설정
-                self.client_socket.settimeout(timeout)
+                self.client_socket.settimeout(socket_timeout)
 
                 # 2. 명령 전송
                 full_command = command + '''\n'''
@@ -225,21 +319,51 @@ class SMDAQServerPure:
 
                 # 3. 응답 수신
                 buffer = bytearray()
+                line_buffer = bytearray()
+                start_time = time.time()
+                completed = False
                 while True:
+                    if time.time() - start_time > max_wait_time:
+                        break
                     try:
                         data = self.client_socket.recv(1024)
                         if not data:
                             break
                         buffer.extend(data)
+                        if on_line:
+                            line_buffer.extend(data)
+                            line_buffer = _drain_line_buffer(line_buffer, on_line)
+
+                        if end_mode and _buffer_has_end_marker(buffer, end_mode):
+                            completed = True
+                            break
+                        # 응답이 'Q'로 끝나는지 확인
+                        if wait_for_etx and buffer.endswith(b'Q'):
+                            completed = True
+                            break
+
                     except socket.timeout:
-                        break
+                        if not needs_complete_response:
+                            if len(buffer) > 0:
+                                break
+                        continue
 
-                    # 응답이 'Q'로 끝나는지 확인
-                    if buffer.endswith(b'Q'):
-                        break
+                if completed:
+                    try:
+                        self.client_socket.settimeout(0.05)
+                        while True:
+                            extra = self.client_socket.recv(1024)
+                            if not extra:
+                                break
+                    except socket.timeout:
+                        pass
 
+                if on_line and line_buffer:
+                    tail = line_buffer.decode("utf-8", errors="replace").strip()
+                    if tail:
+                        on_line(tail)
                 response = buffer.decode('utf-8', errors='ignore').strip()
-                if not is_firmware_cmd:
+                if not is_firmware_cmd and not on_line:
                     self.log(f"응답 수신: '{response}' <- {self.client_address}")
                 return response
 

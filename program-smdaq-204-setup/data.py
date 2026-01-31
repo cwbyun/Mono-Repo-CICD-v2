@@ -2,18 +2,58 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, QDateEdit,
     QHBoxLayout, QGroupBox, QScrollArea, QApplication, QComboBox
 )
-from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtCore import Qt, QDate, QObject, pyqtSignal, QThread
 
 from communication import *
 from utils import *
 import protocol as ptcl
 
 from datetime import datetime
+import time
 from zoneinfo import ZoneInfo  # Python 3.9+
 from pathlib import Path
-import time
 import csv
 import sys
+
+
+class DataStreamWorker(QObject):
+    batch = pyqtSignal(list)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, command: str, server=None, ip=None, port=None):
+        super().__init__()
+        self.command = command
+        self.server = server
+        self.ip = ip
+        self.port = port
+
+    def run(self):
+        batch_lines = []
+        last_flush = time.monotonic()
+
+        def on_line(line: str):
+            nonlocal batch_lines, last_flush
+            line = line.strip()
+            if not line or line == "END":
+                return
+            batch_lines.append(line)
+            now = time.monotonic()
+            if len(batch_lines) >= 50 or now - last_flush >= 0.2:
+                self.batch.emit(batch_lines)
+                batch_lines = []
+                last_flush = now
+
+        try:
+            if self.server:
+                response = self.server.query(self.command, on_line=on_line)
+            else:
+                response = send_command(self.command, self.ip, self.port, on_line=on_line)
+            if batch_lines:
+                self.batch.emit(batch_lines)
+            self.finished.emit(response if response is not None else "")
+        except Exception as exc:
+            self.error.emit(str(exc))
 
 
 class DataTab(QWidget):
@@ -32,13 +72,19 @@ class DataTab(QWidget):
         self.loading_label.setVisible(False)
         main_layout.addWidget(self.loading_label)
         self._busy = False
+        self._async_task_active = False
+        self._stream_thread = None
+        self._stream_worker = None
+        self._stream_line_count = 0
 
         output_layout = QHBoxLayout()
         saved_output_mode = self.main_window.settings.value("data_output_mode", "Log")
         self.output_mode_combo = QComboBox()
         self.output_mode_combo.addItems(["Log", "Save"])
-        if saved_output_mode in ["Log", "Save"]:
+        if saved_output_mode == "Save":
             self.output_mode_combo.setCurrentText(saved_output_mode)
+        else:
+            self.output_mode_combo.setCurrentText("Log")
         output_layout.addWidget(QLabel("Data Output"))
         output_layout.addWidget(self.output_mode_combo)
         self.output_hint_label = QLabel()
@@ -57,7 +103,7 @@ class DataTab(QWidget):
 
         layout0_config = [
                 {'type': 'label', 'text': 'Data Tab의 명령은 Timeout=5초로, 명령 후 최소 5초의 시간이 걸립니다.\n'
-                                          'Output 모드: Log=로그창에 앞 10줄+뒤 10줄 표시, Save=자동으로 날짜/시간 파일 저장.\n'
+                                          'Output 모드: Log=실시간 로그 출력, Save=자동으로 날짜/시간 파일 저장.\n'
                                           '저장 파일은 날짜/시간으로 자동 저장되며, 메모장으로 열어 확인을 권장합니다.'},
         ]
         group0, self.widgets0 = create_dynamic_group('NOTICE', layout0_config )
@@ -246,56 +292,122 @@ class DataTab(QWidget):
         try:
             fn()
         finally:
-            self.set_busy(False)
+            if not self._async_task_active:
+                self.set_busy(False)
 
     def should_save_output(self) -> bool:
         return self.output_mode_combo.currentText() == "Save"
 
-    def response_to_lines(self, response):
-        s = response.decode("utf-8", "replace") if isinstance(response, (bytes, bytearray)) else response
-        return [ln.split(" <- ", 1)[0].strip() for ln in s.splitlines() if ln.strip() and ln.strip() != "END"]
-
-    def log_response_lines(self, title: str, response, head_lines: int = 10, tail_lines: int = 10):
-        lines = self.response_to_lines(response)
+    def _on_stream_batch(self, lines):
         if not lines:
-            self.main_window.add_log(f"{title}: 응답 데이터가 없습니다.")
             return
-        shown = []
-        if len(lines) <= head_lines + tail_lines:
-            shown = lines
+        self._stream_line_count += len(lines)
+        self.main_window.add_log_lines(lines)
+
+    def _on_stream_finished(self, title: str, response: str):
+        self.main_window.add_log(f"{title} 스트리밍 완료 ({self._stream_line_count} lines)")
+        self._async_task_active = False
+        self.set_busy(False)
+        self._stream_thread = None
+        self._stream_worker = None
+
+    def _on_stream_error(self, title: str, message: str):
+        self.main_window.add_log(f"{title} 스트리밍 오류: {message}")
+        self._async_task_active = False
+        self.set_busy(False)
+        self._stream_thread = None
+        self._stream_worker = None
+
+    def log_response_stream(self, title: str, cmd: str, data_str=None):
+        if self._async_task_active:
+            return
+        self._async_task_active = True
+        self._stream_line_count = 0
+        self.main_window.add_log(f"{title} 응답 스트리밍 시작")
+
+        if data_str:
+            command = ptcl.STX + cmd + data_str + "Q"
         else:
-            shown = lines[:head_lines] + ["..."] + lines[-tail_lines:]
-        body = "\n".join(shown)
-        more = ""
-        if len(lines) > head_lines + tail_lines:
-            more = f"\n... (총 {len(lines)} 줄 중 앞 {head_lines}줄 + 뒤 {tail_lines}줄 표시)"
-        self.main_window.add_log(f"{title} 응답 ({len(lines)} lines)\n{body}{more}")
+            command = ptcl.STX + cmd + "Q"
+
+        server = self.main_window.server if self.main_window.is_server_mode() else None
+        ip = None
+        port = None
+        if server is None:
+            ip, port = self.main_window.get_ip_port()
+
+        self._stream_thread = QThread(self)
+        self._stream_worker = DataStreamWorker(command, server=server, ip=ip, port=port)
+        self._stream_worker.moveToThread(self._stream_thread)
+        self._stream_thread.started.connect(self._stream_worker.run)
+        self._stream_worker.batch.connect(self._on_stream_batch)
+        self._stream_worker.finished.connect(lambda response: self._on_stream_finished(title, response))
+        self._stream_worker.error.connect(lambda message: self._on_stream_error(title, message))
+        self._stream_worker.finished.connect(self._stream_thread.quit)
+        self._stream_worker.error.connect(self._stream_thread.quit)
+        self._stream_worker.finished.connect(self._stream_worker.deleteLater)
+        self._stream_worker.error.connect(self._stream_worker.deleteLater)
+        self._stream_thread.finished.connect(self._stream_thread.deleteLater)
+        self._stream_thread.start()
 
     def on_output_mode_changed(self, mode: str):
         self.main_window.settings.setValue("data_output_mode", mode)
         if mode == "Save":
             self.output_hint_label.setText("파일 저장 모드")
         else:
-            self.output_hint_label.setText("로그 출력 모드 (앞 10줄 + 뒤 10줄)")
+            self.output_hint_label.setText("스트리밍 로그 모드 (수신 즉시 출력)")
 
     def interval_time_set_btn( self ):
-        data_str = str(int(self.widgets14['interval_time'].text())).zfill(4)
-        command, response = self.data_command( "7", data_str )
+        try:
+            data_str = str(int(self.widgets14['interval_time'].text())).zfill(4)
+            command, response = self.data_command( "7", data_str )
+
+            # Decode and validate response
+            response_str = response.decode("utf-8", "replace") if isinstance(response, (bytes, bytearray)) else response
+            self.main_window.add_log(f"Interval Time 설정 완료: {data_str} 초")
+
+        except ValueError:
+            self.main_window.add_log("유효한 숫자를 입력하세요.")
+        except Exception as e:
+            self.main_window.add_log(f"Interval Time 설정 오류: {e}")
 
     def setting_date_time_set_btn( self ):
-        data_str = self.widgets13['datetime_date'].date().toString("yyMMdd")
-        data_str += (self.widgets13['datetime_time'].text() or '00:00').replace(':','')
-        command, response = self.data_command( "6", data_str )
+        try:
+            data_str = self.widgets13['datetime_date'].date().toString("yyMMdd")
+            data_str += (self.widgets13['datetime_time'].text() or '00:00').replace(':','')
+            command, response = self.data_command( "6", data_str )
+
+            # Decode and validate response
+            response_str = response.decode("utf-8", "replace") if isinstance(response, (bytes, bytearray)) else response
+            self.main_window.add_log(f"날짜/시간 설정 완료: {data_str}")
+
+        except Exception as e:
+            self.main_window.add_log(f"날짜/시간 설정 오류: {e}")
 
 
 
 
 
     def stop_reading_get_btn(self):
-        command, response = self.data_command("S", log=True )
+        try:
+            command, response = self.data_command("S", log=False )
+            response_str = response.decode("utf-8", "replace") if isinstance(response, (bytes, bytearray)) else response
+            self.main_window.add_log("로거 읽기 중지 명령 전송 완료")
+        except Exception as e:
+            self.main_window.add_log(f"로거 중지 명령 오류: {e}")
     
     def alarm_data_get_btn(self):
-        command, response = self.data_command("H", log=True )
+        try:
+            if self.should_save_output():
+                command, response = self.data_command("H", log=False)
+                response_str = response.decode("utf-8", "replace") if isinstance(response, (bytes, bytearray)) else response
+                filename = self.get_date("alarm_data")
+                self.save_response_as_list(response, filename)
+                return
+            self.log_response_stream("Alarm Data", "H")
+
+        except Exception as e:
+            self.main_window.add_log(f"알람 데이터 가져오기 오류: {e}")
 
     def number_data_get_btn(self):
         raw = (self.widgets10['number_data'].text() or "").strip()
@@ -313,8 +425,18 @@ class DataTab(QWidget):
             elif n > 9999:
                 n = 9999
 
-        data_str = f"{n:04d}"           # -> "0001" ~ "9999"
-        command, response = self.data_command("G", data_str, log=True)
+        try:
+            data_str = f"{n:04d}"           # -> "0001" ~ "9999"
+            if self.should_save_output():
+                command, response = self.data_command("G", data_str, log=False)
+                response_str = response.decode("utf-8", "replace") if isinstance(response, (bytes, bytearray)) else response
+                filename = self.get_date("number_data")
+                self.save_response_as_list(response, filename)
+                return
+            self.log_response_stream(f"Number Data {n}", "G", data_str)
+
+        except Exception as e:
+            self.main_window.add_log(f"Number Data 가져오기 오류: {e}")
 
 
 
@@ -325,12 +447,32 @@ class DataTab(QWidget):
 
 
     def sd_card_file_data_get_btn( self ):
-        data_str = self.widgets9['sd_card_file_data_start'].date().toString("yyyyMMdd")
-        command, response = self.data_command( "F", data_str, log=True )
+        try:
+            data_str = self.widgets9['sd_card_file_data_start'].date().toString("yyyyMMdd")
+            if self.should_save_output():
+                command, response = self.data_command( "F", data_str, log=False )
+                response_str = response.decode("utf-8", "replace") if isinstance(response, (bytes, bytearray)) else response
+                filename = self.get_date("sd_card_file_data")
+                self.save_response_as_list(response, filename)
+                return
+            self.log_response_stream(f"SD Card File Data {data_str}", "F", data_str)
+
+        except Exception as e:
+            self.main_window.add_log(f"SD Card File Data 가져오기 오류: {e}")
 
 
     def sd_card_file_list_get_btn( self ):
-        command, response = self.data_command( "E", log=True )
+        try:
+            if self.should_save_output():
+                command, response = self.data_command( "E", log=False )
+                response_str = response.decode("utf-8", "replace") if isinstance(response, (bytes, bytearray)) else response
+                filename = self.get_date("sd_card_file_list")
+                self.save_response_as_list(response, filename)
+                return
+            self.log_response_stream("SD Card File List", "E")
+
+        except Exception as e:
+            self.main_window.add_log(f"SD Card File List 가져오기 오류: {e}")
 
 
 
@@ -344,9 +486,26 @@ class DataTab(QWidget):
             self.main_window.add_log(f"폴더 번호를 넣으세요.")
             return
 
-        command, response = self.data_command( "A", data_str, log=True )
+        try:
+            command, response = self.data_command( "A", data_str, log=False )
 
-        self.widgets7['folder_information'].setText(response)
+            # Decode response if it's bytes
+            response_str = response.decode("utf-8", "replace") if isinstance(response, (bytes, bytearray)) else response
+
+            # Clean up response (remove END and trailing whitespace)
+            lines = [ln.strip() for ln in response_str.splitlines() if ln.strip() and ln.strip() != "END"]
+
+            if lines:
+                # Join all lines for display
+                cleaned_response = "\n".join(lines)
+                self.widgets7['folder_information'].setText(cleaned_response)
+            else:
+                self.widgets7['folder_information'].setText("응답 없음")
+                self.main_window.add_log("폴더 정보 응답이 비어있습니다.")
+
+        except Exception as e:
+            self.main_window.add_log(f"폴더 정보 가져오기 오류: {e}")
+            self.widgets7['folder_information'].setText("오류 발생")
 
 
 
@@ -358,25 +517,43 @@ class DataTab(QWidget):
 
         data_str = start_yymmdd+end_yymmdd
 
-        command, response = self.data_command( "B", data_str, log=True )
-
         if self.should_save_output():
+            command, response = self.data_command( "B", data_str, log=False )
             filename = self.get_date("folder_in_range")
             self.save_response_as_list( response, filename )
-        else:
-            self.log_response_lines("Folder Range", response)
+            return
+        self.log_response_stream("Folder Range", "B", data_str)
 
 
 
 
     def folder_number_get_btn( self ):
-        command, response = self.data_command( "9", log=True )
+        command, response = self.data_command( "9", log=False )
 
-        print("res in data.py = ", response )
-        
-        r = int(response)
-        print("int(res) in data.py = ", response )
-        self.widgets5['folder_number'].setText(str(r))
+        try:
+            # Decode response if it's bytes
+            response_str = response.decode("utf-8", "replace") if isinstance(response, (bytes, bytearray)) else response
+
+            # Extract number from response (remove whitespace, END, and other text)
+            lines = [ln.strip() for ln in response_str.splitlines() if ln.strip() and ln.strip() != "END"]
+
+            if not lines:
+                self.main_window.add_log("폴더 번호 응답이 비어있습니다.")
+                return
+
+            # Get first non-empty line and extract digits
+            first_line = lines[0].split(" <- ", 1)[0].strip()
+
+            # Convert to integer
+            r = int(first_line)
+
+            print(f"Folder number received: {r}")
+            self.widgets5['folder_number'].setText(str(r))
+
+        except ValueError as e:
+            self.main_window.add_log(f"폴더 번호 파싱 실패: 숫자가 아닌 응답 '{response}' - {e}")
+        except Exception as e:
+            self.main_window.add_log(f"폴더 번호 가져오기 오류: {e}")
 
 
 
@@ -390,13 +567,12 @@ class DataTab(QWidget):
             self.main_window.add_log(f"폴더 번호를 넣으세요.")
             return
 
-        command, response = self.data_command( "4", folder_number, log=True )
-
         if self.should_save_output():
+            command, response = self.data_command( "4", folder_number, log=False )
             # Auto-detect format based on first character and parse accordingly
             self.parse_and_save_sensor_data_auto(response, folder_number)
-        else:
-            self.log_response_lines(f"Data in Folder {folder_number}", response)
+            return
+        self.log_response_stream(f"Data in Folder {folder_number}", "4", folder_number)
 
     def parse_and_save_sensor_data_auto(self, response, folder_number):
         """Auto-detect DL24/DL25 format and parse accordingly"""
@@ -621,17 +797,26 @@ class DataTab(QWidget):
             self.main_window.add_log(f"센서 데이터 파싱/저장 실패: {e}")
 
     def latest_data_get_btn( self ):
-        command, response = self.data_command( "C", log=True )
+        try:
+            if self.should_save_output():
+                command, response = self.data_command( "C", log=False )
+                response_str = response.decode("utf-8", "replace") if isinstance(response, (bytes, bytearray)) else response
+                filename = self.get_date("latest_data")
+                self.save_response_as_list(response, filename)
+                return
+            self.log_response_stream("Latest Data", "C")
+
+        except Exception as e:
+            self.main_window.add_log(f"Latest Data 가져오기 오류: {e}")
 
     def all_data_get_btn( self ):
         self.main_window.add_log("Data를 불러오고 있습니다. 잠시만 기다리세요...")
-        command, response = self.data_command( "D", log=False )
-
         if self.should_save_output():
+            command, response = self.data_command( "D", log=False )
             filename = self.get_date( "all_data" )
             self.save_response_as_list( response, filename )
-        else:
-            self.log_response_lines("All Data", response)
+            return
+        self.log_response_stream("All Data", "D")
 
 
     def get_date( self, name: str ) -> str :
@@ -679,18 +864,17 @@ class DataTab(QWidget):
         
         #self.main_window.add_log("Data를 불러오고 있습니다. 잠시만 기다리세요...")
         #time.sleep(1)
-        command, response = self.data_command( "3" )
-
         # 파일명: sensor_data_YYYYMMDD_HHMMSS.txt
         #ts = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d_%H%M%S")
         #out_dir = Path("logs")
         #out_dir.mkdir(parents=True, exist_ok=True)
         #out_path = out_dir / f"data_list_{ts}.txt"
         if self.should_save_output():
+            command, response = self.data_command( "3" )
             out_path = self.get_date( "data_list" )
             self.save_response_as_list( response, out_path )
-        else:
-            self.log_response_lines("Data List", response)
+            return
+        self.log_response_stream("Data List", "3")
 
         #ans = trim_string( response, 4, 3 )
 
@@ -705,7 +889,7 @@ class DataTab(QWidget):
 
 
 
-    def data_command( self, CMD, data_str=None, log=False ):
+    def data_command(self, CMD, data_str=None, log=False, on_line=None):
         #ip, port = self.main_window.get_ip_port()
 
         if data_str :
@@ -717,7 +901,11 @@ class DataTab(QWidget):
 
         #self.main_window.add_log(f"전송 >> {command}")
         #response = send_command(command, ip, port)
-        response = self.main_window.send_command_unified(command)
-        #if log : self.main_window.add_log(f"응답 << {response}")
+        response = self.main_window.send_command_unified(command, log=log, on_line=on_line)
+
+        # log=True일 때만 전체 응답을 로그에 출력
+        if log:
+            response_str = response.decode("utf-8", "replace") if isinstance(response, (bytes, bytearray)) else response
+            self.main_window.add_log(f"응답 << {response_str}")
 
         return command, response

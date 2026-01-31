@@ -254,6 +254,14 @@ class MainWindow(QMainWindow):
         self.log_output.appendPlainText(log_message)
         self.log_output.verticalScrollBar().setValue(self.log_output.verticalScrollBar().maximum())
 
+    def add_log_lines(self, lines):
+        if not lines:
+            return
+        now = QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
+        log_message = "\n".join(f"[{now}] {line}" for line in lines)
+        self.log_output.appendPlainText(log_message)
+        self.log_output.verticalScrollBar().setValue(self.log_output.verticalScrollBar().maximum())
+
     def on_client_attempt(self, ip: str):
         if hasattr(self, "general_tab"):
             self.general_tab.add_incoming_client_ip(ip)
@@ -401,20 +409,20 @@ class MainWindow(QMainWindow):
         except:
             return False
 
-    def send_command_unified(self, command:str, log=False):
+    def send_command_unified(self, command: str, log=False, on_line=None):
         """모드에 따라 명령을 전송하고 응답을 반환합니다."""
 
         #self.log_signal.emit(f"명령 전송: {command}")
 
         if self.server and self.server.is_running:
             # 서버 모드: query 메서드를 사용하여 동기식으로 응답을 받음
-            response = self.server.query(command)
+            response = self.server.query(command, on_line=on_line)
             #if log : self.log_signal.emit(f"서버 응답: {response}")
             return response
         else:
             # 클라이언트 모드: 기존 방식대로 전송하고 응답 받기
             ip, port = self.get_ip_port()
-            return send_command(command, ip, port)
+            return send_command(command, ip, port, on_line=on_line)
 
 
 
