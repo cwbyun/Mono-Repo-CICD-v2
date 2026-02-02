@@ -282,7 +282,7 @@ class SMDAQServerPure:
                 self.client_socket = None
                 self.client_address = None
 
-    def query(self, command: str, timeout: Optional[float] = None, on_line=None) -> Optional[str]:
+    def query(self, command: str, timeout: Optional[float] = None, on_line=None, event_pump=None) -> Optional[str]:
         """
         클라이언트에게 동기식으로 명령을 보내고 응답을 기다립니다.
         :param command: 전송할 명령 문자열
@@ -301,6 +301,18 @@ class SMDAQServerPure:
                     _, _, wait_for_etx = _get_command_timeout(command)
                     socket_timeout = timeout
                     max_wait_time = timeout
+                read_timeout = socket_timeout
+                pump_interval = 0.1
+                last_pump = time.monotonic() if event_pump else 0.0
+
+                def pump_events():
+                    nonlocal last_pump
+                    if not event_pump:
+                        return
+                    now = time.monotonic()
+                    if now - last_pump >= pump_interval:
+                        event_pump()
+                        last_pump = now
                 clean_cmd = _normalize_command(command)
                 end_mode = _get_end_mode(clean_cmd)
                 needs_complete_response = bool(end_mode) or wait_for_etx
@@ -311,6 +323,10 @@ class SMDAQServerPure:
                 full_command = command + '''\n'''
                 self.client_socket.sendall(full_command.encode('utf-8'))
                 self._update_activity()
+
+                if event_pump:
+                    read_timeout = min(socket_timeout, 0.2)
+                self.client_socket.settimeout(read_timeout)
 
                 # 펌웨어 업데이트 명령(SWND, SWNA, SWNT, SWNE)은 로그 생략
                 is_firmware_cmd = command.startswith('SWND') or command.startswith('SWNA') or command.startswith('SWNT') or command.startswith('SWNE')
@@ -325,6 +341,7 @@ class SMDAQServerPure:
                 while True:
                     if time.time() - start_time > max_wait_time:
                         break
+                    pump_events()
                     try:
                         data = self.client_socket.recv(1024)
                         if not data:
@@ -343,6 +360,7 @@ class SMDAQServerPure:
                             break
 
                     except socket.timeout:
+                        pump_events()
                         if not needs_complete_response:
                             if len(buffer) > 0:
                                 break

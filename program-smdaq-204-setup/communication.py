@@ -116,7 +116,7 @@ def _get_command_timeout(command: str) -> tuple:
     else:
         return (5.0, 8.0, True)    # 일반적인 설정
 
-def send_command(command: str, ip: str, port: int, on_line=None) -> str:
+def send_command(command: str, ip: str, port: int, on_line=None, event_pump=None) -> str:
     """
         지정된 IP와 포트로 TCP 소켓 통신을 통해 명령을 보내고 응답을 받습니다.
 
@@ -133,6 +133,18 @@ def send_command(command: str, ip: str, port: int, on_line=None) -> str:
     socket_timeout, max_wait_time, wait_for_etx = _get_command_timeout(command)
     end_mode = _get_end_mode(_normalize_command(command))
 
+    pump_interval = 0.1
+    last_pump = time.monotonic() if event_pump else 0.0
+
+    def pump_events():
+        nonlocal last_pump
+        if not event_pump:
+            return
+        now = time.monotonic()
+        if now - last_pump >= pump_interval:
+            event_pump()
+            last_pump = now
+
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(socket_timeout)
@@ -144,6 +156,11 @@ def send_command(command: str, ip: str, port: int, on_line=None) -> str:
 
             sock.sendall( (command + "\n").encode("utf-8"))
 
+            read_timeout = socket_timeout
+            if event_pump:
+                read_timeout = min(socket_timeout, 0.2)
+            sock.settimeout(read_timeout)
+
             response_bytes = b""
             line_buffer = bytearray()
             start_time = time.time()
@@ -153,6 +170,7 @@ def send_command(command: str, ip: str, port: int, on_line=None) -> str:
                 # 최대 대기 시간 초과 검사
                 if time.time() - start_time > max_wait_time:
                     break
+                pump_events()
 
                 try:
                     chunk = sock.recv(8192)
@@ -171,10 +189,14 @@ def send_command(command: str, ip: str, port: int, on_line=None) -> str:
                     # ETX를 기다리지 않는 명령의 경우, 데이터가 있으면 잠깐 더 기다림
                     elif not wait_for_etx and len(response_bytes) > 0:
                         # 추가 데이터가 올 수 있으니 짧게 대기
-                        sock.settimeout(0.5)
+                        extra_timeout = 0.5
+                        if event_pump:
+                            extra_timeout = min(extra_timeout, read_timeout)
+                        sock.settimeout(extra_timeout)
                         continue
 
                 except socket.timeout:
+                    pump_events()
                     # ETX를 기다리지 않는 명령이거나, 이미 데이터가 있으면 종료
                     if not needs_complete_response:
                         if len(response_bytes) > 0:

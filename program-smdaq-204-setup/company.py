@@ -15,7 +15,14 @@ import re
 # 통합된 업체 및 모델 데이터 구조
 # id_format: {"prefix": "접두어", "digits": 자릿수} - 고정 형식이 있는 경우
 COMPANY_DATA = [
-    {"name": "디피에스글로벌", "models": ["DTA-01", "DP-17"]},
+    {
+        "name": "디피에스글로벌",
+        "models": ["DTA-01", "DP-17"],
+        "id_format": {
+            "DTA-01": {"prefix": "", "digits": 3},
+            "DP-17": {"prefix": "", "digits": 3}
+        }
+    },
     {
         "name": "주원엔지니어링",
         "models": ["JTA-01", "JW-17"],
@@ -252,10 +259,25 @@ class CompanyTab(QWidget):
             if id2_text == "0":
                 id2_text = ""
 
-            if not pk1_text or not id1_text:
-                self.main_window.add_log("PK/ID 입력이 필요합니다.")
+            # 디피에스글로벌인 경우 PK 없이도 가능
+            company_name = cc[2:] if len(cc) > 2 else cc
+            is_dps_global = (company_name == "디피에스글로벌")
+
+            # ID는 필수
+            if not id1_text:
+                self.main_window.add_log("ID 입력이 필요합니다.")
                 return
-            if not pk1_text.isdigit():
+
+            # PK 검증 (디피에스글로벌이 아닌 경우만 필수)
+            if not is_dps_global and not pk1_text:
+                self.main_window.add_log("PK 입력이 필요합니다.")
+                return
+
+            # 디피에스글로벌이고 PK가 없으면 기본값 00 사용
+            if is_dps_global and not pk1_text:
+                pk1_text = "0"
+
+            if pk1_text and not pk1_text.isdigit():
                 self.main_window.add_log("PK는 숫자만 입력 가능합니다.")
                 return
             if pk2_text and not pk2_text.isdigit():
@@ -265,22 +287,23 @@ class CompanyTab(QWidget):
                 self.main_window.add_log("PK to 입력 시 ID to도 필요합니다.")
                 return
 
-            pk1 = int(pk1_text)
+            pk1 = int(pk1_text) if pk1_text else 0
             pk2 = int(pk2_text) if pk2_text else None
 
-            # PK 중복 체크
-            existing_pks = self.get_existing_pks_for_line(line_num)
-            pks_to_add = set()
-            if pk2 is not None:
-                pks_to_add = set(range(pk1, pk2 + 1))
-            else:
-                pks_to_add = {pk1}
+            # PK 중복 체크 (디피에스글로벌은 제외)
+            if not is_dps_global:
+                existing_pks = self.get_existing_pks_for_line(line_num)
+                pks_to_add = set()
+                if pk2 is not None:
+                    pks_to_add = set(range(pk1, pk2 + 1))
+                else:
+                    pks_to_add = {pk1}
 
-            duplicate_pks = pks_to_add & existing_pks
-            if duplicate_pks:
-                duplicate_list = sorted(list(duplicate_pks))
-                self.main_window.add_log(f"오류: PK 중복 - 이미 존재하는 PK입니다: {duplicate_list}")
-                return
+                duplicate_pks = pks_to_add & existing_pks
+                if duplicate_pks:
+                    duplicate_list = sorted(list(duplicate_pks))
+                    self.main_window.add_log(f"오류: PK 중복 - 이미 존재하는 PK입니다: {duplicate_list}")
+                    return
             id1_parsed = self.parse_sensor_id(gg, id1_text, user_prefix)
             if not id1_parsed:
                 self.main_window.add_log("ID 형식이 올바르지 않습니다. (예: 1001, STM-1001)")

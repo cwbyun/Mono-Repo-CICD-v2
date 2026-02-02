@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QFormLayout, QLineEdit, QPushButton, QTabWidget, QPlainTextEdit, 
     QSplitter, QLabel, QGroupBox
 )
-from PyQt6.QtCore import Qt, QDateTime, QTimer, pyqtSignal, QSettings
+from PyQt6.QtCore import Qt, QDateTime, QTimer, pyqtSignal, QSettings, QCoreApplication, QThread
 
 from communication import send_command
 from general import GeneralTab
@@ -127,8 +127,15 @@ class MainWindow(QMainWindow):
         server_layout.addWidget(QLabel("Client IP"))
         server_layout.addWidget(self.client_ip_input)
         server_layout.addWidget(self.server_status_label)
+        self.idle_status_message = "상태: 준비됨"
+        self.status_hint_label = QLabel(self.idle_status_message)
+        self.status_hint_label.setStyleSheet(
+            "padding: 0 6px; background: #eef3ff; border: 1px solid #ccd8f2;"
+        )
+        self.status_hint_label.setFixedHeight(20)
         server_layout.addWidget(self.server_start_button)
         server_layout.addWidget(self.server_stop_button)
+        server_layout.addWidget(self.status_hint_label)
         server_layout.addStretch(1)
         main_layout.addLayout(server_layout)
 
@@ -208,7 +215,8 @@ class MainWindow(QMainWindow):
         
         main_layout.addLayout(bottom_layout)
 
-        self.log_signal.emit("프로그램을 시작합니다.")
+        self.log_signal.emit(self.idle_status_message)
+        self.statusBar().showMessage(self.idle_status_message)
 
     def get_local_ip(self) -> str:
         import socket
@@ -263,6 +271,13 @@ class MainWindow(QMainWindow):
         log_message = "\n".join(f"[{now}] {line}" for line in lines)
         self.log_output.appendPlainText(log_message)
         self.log_output.verticalScrollBar().setValue(self.log_output.verticalScrollBar().maximum())
+
+    def set_app_status(self, message, status_bar_message=None):
+        self.status_hint_label.setText(message)
+        if status_bar_message is None:
+            self.statusBar().showMessage(message)
+        else:
+            self.statusBar().showMessage(status_bar_message)
 
     def on_client_attempt(self, ip: str):
         if hasattr(self, "general_tab"):
@@ -416,15 +431,26 @@ class MainWindow(QMainWindow):
 
         #self.log_signal.emit(f"명령 전송: {command}")
 
-        if self.server and self.server.is_running:
-            # 서버 모드: query 메서드를 사용하여 동기식으로 응답을 받음
-            response = self.server.query(command, on_line=on_line)
-            #if log : self.log_signal.emit(f"서버 응답: {response}")
-            return response
-        else:
-            # 클라이언트 모드: 기존 방식대로 전송하고 응답 받기
-            ip, port = self.get_ip_port()
-            return send_command(command, ip, port, on_line=on_line)
+        app = QCoreApplication.instance()
+        is_ui_thread = bool(app and QThread.currentThread() == app.thread())
+        event_pump = app.processEvents if is_ui_thread else None
+
+        if is_ui_thread:
+            self.set_app_status("통신중")
+
+        try:
+            if self.server and self.server.is_running:
+                # 서버 모드: query 메서드를 사용하여 동기식으로 응답을 받음
+                response = self.server.query(command, on_line=on_line, event_pump=event_pump)
+                #if log : self.log_signal.emit(f"서버 응답: {response}")
+                return response
+            else:
+                # 클라이언트 모드: 기존 방식대로 전송하고 응답 받기
+                ip, port = self.get_ip_port()
+                return send_command(command, ip, port, on_line=on_line, event_pump=event_pump)
+        finally:
+            if is_ui_thread:
+                self.set_app_status(self.idle_status_message)
 
 
 
