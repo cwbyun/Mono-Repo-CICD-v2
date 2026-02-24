@@ -137,6 +137,7 @@ class CompanyTab(QWidget):
             {'type': 'button', 'text': 'SET', 'name': 'set_btn'},
             {'type': 'button', 'text': 'GET', 'name': 'get_btn'},
             {'type': 'button', 'text': '전체 선택/해제', 'name': 'toggle_all_btn'},
+            {'type': 'button', 'text': '선택 수정', 'name': 'modify_selected_btn'},
             {'type': 'button', 'text': '선택 삭제', 'name': 'delete_selected_btn'},
         ]
         group2, self.widgets2 = create_dynamic_group('Sensor ID (cmd=7D)', layout2_config, input_width=100)
@@ -181,6 +182,7 @@ class CompanyTab(QWidget):
         self.widgets2['set_btn'].clicked.connect(self.sensor_id_set_btn)
         self.widgets2['get_btn'].clicked.connect(self.sensor_id_get_btn)
         self.widgets2['toggle_all_btn'].clicked.connect(self.toggle_all_ids)
+        self.widgets2['modify_selected_btn'].clicked.connect(self.modify_selected_ids)
         self.widgets2['delete_selected_btn'].clicked.connect(self.delete_selected_ids)
         self.widgets2['company'].currentTextChanged.connect(self.on_company_changed2)
         self.widgets2['model'].currentTextChanged.connect(self.on_model_changed2)
@@ -667,6 +669,99 @@ class CompanyTab(QWidget):
 
         # 6은 7번째 컬럼에 넣는 것이다.
         table.setCellWidget(row, 6, widget)  # 삭제 버튼 삽입
+
+    def modify_id_row_by_table(self, table, row) -> bool:
+        # 선택된 행의 Sensor ID를 수정한다. (GET 갱신 없이 수정만 수행)
+        try:
+            line_text = table.item(row, 0).text()
+            company   = table.item(row, 1).text()
+            model     = table.item(row, 2).text()
+            pk_text   = table.item(row, 3).text()
+            sensor_id = table.item(row, 4).text()
+
+            original = None
+            id_item = table.item(row, 4)
+            if id_item:
+                original = id_item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(original, dict):
+                old_line       = original.get("line", int(line_text) - 1)
+                old_company    = original.get("company", company)
+                old_model      = original.get("model", model)
+                old_sensor_id  = original.get("sensor_id", sensor_id)
+            else:
+                old_line      = int(line_text) - 1
+                old_company   = company
+                old_model     = model
+                old_sensor_id = sensor_id
+
+            line = str(int(line_text) - 1)
+            pk   = str(int(pk_text)).zfill(2)
+
+            company_num = self.get_company_index(company)
+            model_num   = self.get_model_index(company_num, model)
+            if company_num < 0 or model_num < 0:
+                self.main_window.add_log(f"오류: 업체 또는 모델 정보가 올바르지 않습니다. (row {row})")
+                return False
+
+            old_company_num = self.get_company_index(old_company)
+            old_model_num   = self.get_model_index(old_company_num, old_model)
+            if old_company_num < 0 or old_model_num < 0:
+                self.main_window.add_log(f"오류: 기존 업체 또는 모델 정보가 올바르지 않습니다. (row {row})")
+                return False
+
+            # 기존 항목 삭제 (7E)
+            delete_str  = str(old_line)
+            delete_str += str(old_company_num + 1).zfill(2)
+            delete_str += str(old_model_num + 1).zfill(2)
+            delete_str += old_sensor_id + ","
+
+            command, response = self.common_command("W", "7E", delete_str)
+            is_valid, error_message = check_response(response)
+            if not is_valid:
+                self.main_window.add_log(f"응답 검증 실패 (row {row}): {error_message}")
+                return False
+
+            # 새 항목 등록 (7D)
+            data_str  = line
+            data_str += str(company_num + 1).zfill(2)
+            data_str += str(model_num + 1).zfill(2)
+            data_str += pk
+            data_str += sensor_id + ","
+
+            command, response = self.common_command("W", "7D", data_str)
+            is_valid, error_message = check_response(response)
+            if not is_valid:
+                self.main_window.add_log(f"응답 검증 실패 (row {row}): {error_message}")
+                return False
+
+            return True
+        except Exception as e:
+            self.main_window.add_log(f"수정 실패 (row {row}): {e}")
+            return False
+
+    def modify_selected_ids(self):
+        table = getattr(self, "id_table", None)
+        if not table:
+            self.main_window.add_log("Sensor ID 테이블이 없습니다.")
+            return
+
+        selected_rows = []
+        for row in range(table.rowCount()):
+            item = table.item(row, 7)
+            if item and item.checkState() == Qt.CheckState.Checked:
+                selected_rows.append(row)
+
+        if not selected_rows:
+            self.main_window.add_log("수정할 항목을 선택하세요.")
+            return
+
+        success_count = 0
+        for row in selected_rows:
+            if self.modify_id_row_by_table(table, row):
+                success_count += 1
+
+        self.main_window.add_log(f"선택 수정 완료: {success_count}/{len(selected_rows)} 건")
+        self.sensor_id_get_btn()
 
     def delete_selected_ids(self):
         table = getattr(self, "id_table", None)
