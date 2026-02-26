@@ -64,17 +64,30 @@ class MainWindow(QMainWindow):
         
         self.ip_input = QLineEdit(saved_ip)
         self.port_input = QLineEdit(saved_port)
-        
+
         # 값 변경 시 즉시 저장
         self.ip_input.textChanged.connect(lambda: self.settings.setValue("client_ip", self.ip_input.text()))
         self.port_input.textChanged.connect(lambda: self.settings.setValue("client_port", self.port_input.text()))
 
+        # 클라이언트 모드 상태 변수
+        self.client_active = False
+
+        # 클라이언트 모드 버튼 및 상태 레이블
+        self.client_status_label = QLabel("클라이언트: 비활성")
+        self.client_start_button = QPushButton("클라이언트 시작")
+        self.client_stop_button = QPushButton("클라이언트 중지")
+        self.client_start_button.clicked.connect(self.start_client_mode)
+        self.client_stop_button.clicked.connect(self.stop_client_mode)
+        self.client_stop_button.setEnabled(False)
+
         connection_layout.addWidget( QLabel("Client Mode (명령 전송 대상):") )
         connection_layout.addWidget( QLabel("IP") )
         connection_layout.addWidget( self.ip_input )
-
-        connection_layout.addWidget( QLabel("PORT"))
+        connection_layout.addWidget( QLabel("PORT") )
         connection_layout.addWidget( self.port_input )
+        connection_layout.addWidget( self.client_status_label )
+        connection_layout.addWidget( self.client_start_button )
+        connection_layout.addWidget( self.client_stop_button )
         connection_layout.addStretch(1)
         main_layout.addLayout(connection_layout)
 
@@ -350,6 +363,41 @@ class MainWindow(QMainWindow):
 
 
 
+    def start_client_mode(self):
+        ip = self.ip_input.text().strip()
+        port_text = self.port_input.text().strip()
+
+        if not ip:
+            self.log_signal.emit("오류: IP 주소를 입력하세요.")
+            return
+
+        if not self.validate_ip_address(ip):
+            self.log_signal.emit("오류: 올바른 IP 주소 형식이 아닙니다.")
+            return
+
+        try:
+            port = int(port_text)
+        except ValueError:
+            self.log_signal.emit("오류: Port는 숫자만 입력하세요.")
+            return
+
+        self.client_active = True
+        self.ip_input.setEnabled(False)
+        self.port_input.setEnabled(False)
+        self.client_start_button.setEnabled(False)
+        self.client_stop_button.setEnabled(True)
+        self.client_status_label.setText(f"클라이언트: {ip}:{port} 활성")
+        self.log_signal.emit(f"클라이언트 모드 시작 - 대상: {ip}:{port}")
+
+    def stop_client_mode(self):
+        self.client_active = False
+        self.ip_input.setEnabled(True)
+        self.port_input.setEnabled(True)
+        self.client_start_button.setEnabled(True)
+        self.client_stop_button.setEnabled(False)
+        self.client_status_label.setText("클라이언트: 비활성")
+        self.log_signal.emit("클라이언트 모드 중지")
+
     def start_server(self):
         # 클라이언트 IP 유효성 검사
         client_ip = self.client_ip_input.text().strip()
@@ -370,6 +418,10 @@ class MainWindow(QMainWindow):
         if self.server and self.server.is_running:
             self.log_signal.emit("서버가 이미 실행 중입니다.")
             return
+
+        # 클라이언트 모드가 활성화된 경우 중지
+        if self.client_active:
+            self.stop_client_mode()
 
         try:
             self.log_signal.emit("서버 시작 중...")
@@ -395,6 +447,7 @@ class MainWindow(QMainWindow):
                 self.server_stop_button.setEnabled(True)
                 self.server_port_input.setEnabled(False)
                 self.client_ip_input.setEnabled(False)  # 서버 실행 중에는 클라이언트 IP 변경 불가
+                self.client_start_button.setEnabled(False)  # 서버 실행 중에는 클라이언트 모드 시작 불가
                 self.log_signal.emit(f"서버 시작됨 - {self.local_ip}:{port} (클라이언트: {client_ip})")
             else:
                 self.log_signal.emit("서버 시작에 실패했습니다.")
@@ -412,6 +465,7 @@ class MainWindow(QMainWindow):
             self.server_stop_button.setEnabled(False)
             self.server_port_input.setEnabled(True)
             self.client_ip_input.setEnabled(True)  # 서버 중지 후 클라이언트 IP 변경 가능
+            self.client_start_button.setEnabled(True)  # 서버 중지 후 클라이언트 모드 시작 가능
             self.check_server_button_state()  # 클라이언트 IP 입력 상태에 따라 시작 버튼 활성화
             self.log_signal.emit("서버가 중지되었습니다.")
         else:
