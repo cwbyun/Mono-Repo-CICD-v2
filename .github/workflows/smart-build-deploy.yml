@@ -63,7 +63,7 @@ jobs:
     if: ${{ (needs.detect-changes.outputs.matrix || '[]') != '[]' }}
     # 파이썬 프로젝트 폴더 목록을 배열(JSON 문자열)로 정의하고, 조건문에서 contains + fromJson으로 간결하게 사용합니다.
     env:
-      PY_PROJECTS: '["program-smdaq-204-setup","program-rs485-gui","program-real-time-data-tracing","program-dpsdl-setup","program-folder-db", "program-gerber2dxf"]'
+      PY_PROJECTS: '["program-smdaq-204-setup","program-rs485-gui","program-real-time-data-tracing","program-dpsdl-setup","program-folder-db", "program-gerber2dxf", "program-hwp-worker"]'
     
     runs-on: windows-latest
     strategy:
@@ -111,10 +111,26 @@ jobs:
           cd ..
 
       - name: Build Python Executable with PyInstaller
-        if: contains(fromJson(env.PY_PROJECTS), matrix.value)
+        if: contains(fromJson(env.PY_PROJECTS), matrix.value) && matrix.value != 'program-hwp-worker'
         run: |
           cd ${{ matrix.value }}
           pyinstaller --onefile --windowed --name $env:APP_NAME main.py
+          cd ..
+
+      - name: Build Python Executable (hwp-worker)
+        if: matrix.value == 'program-hwp-worker'
+        run: |
+          cd ${{ matrix.value }}
+          pyinstaller --onefile --noconsole `
+            --add-data "template.hwp;." `
+            --hidden-import win32com `
+            --hidden-import win32com.client `
+            --hidden-import win32clipboard `
+            --hidden-import win32api `
+            --hidden-import pythoncom `
+            --hidden-import pywintypes `
+            --name $env:APP_NAME `
+            main.py
           cd ..
 
       # 빌드 결과물을 아티팩트로 업로드합니다. (PyInstaller 산출물 기준: dist)
@@ -180,6 +196,9 @@ jobs:
           elif [ "${{ matrix.value }}" == "apps/program-folder-db" ] || [ "${{ matrix.value }}" == "program-folder-db" ]; then
             echo "COPY_FOLDER=/home/cwbyun/Develop/100_Docker/200_dps_web_server/programs/Program-Folder-DB/" >> $GITHUB_ENV
             echo "FILENAME=Program-Folder-DB-v1.0.0" >> $GITHUB_ENV
+          elif [ "${{ matrix.value }}" == "program-hwp-worker" ]; then
+            echo "COPY_FOLDER=/home/cwbyun/Programs/HWP-Worker/" >> $GITHUB_ENV
+            echo "FILENAME=hwp_worker_v1.0" >> $GITHUB_ENV
           else
             echo "배포 경로가 지정되지 않은 프로그램입니다: ${{ matrix.value }}"
             exit 1
