@@ -198,7 +198,7 @@ jobs:
             echo "FILENAME=Program-Folder-DB-v1.0.0" >> $GITHUB_ENV
           elif [ "${{ matrix.value }}" == "program-hwp-worker" ]; then
             echo "COPY_FOLDER=/home/cwbyun/Develop/100_Docker/200_dps_web_server/programs/HWP-Worker/" >> $GITHUB_ENV
-            echo "FILENAME=hwp-worker-v1.0" >> $GITHUB_ENV
+            echo "FILENAME=hwp-worker-v1.1" >> $GITHUB_ENV
           else
             echo "배포 경로가 지정되지 않은 프로그램입니다: ${{ matrix.value }}"
             exit 1
