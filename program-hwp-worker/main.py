@@ -83,8 +83,8 @@ class HwpTemplateBuilder:
         if not b64_data:
             return
         try:
-            # 필드로 이동 (선택 상태)
-            moved = self.hwp.MoveToField(fieldname, True, True, True)
+            # 필드로 이동 (선택 상태) — Text=False: 그림 누름틀(이미지 필드) 검색
+            moved = self.hwp.MoveToField(fieldname, False, True, True)
             if not moved:
                 print(f"  [WARN] 필드 '{fieldname}' 찾을 수 없음")
                 return
