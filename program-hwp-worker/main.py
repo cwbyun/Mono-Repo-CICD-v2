@@ -22,7 +22,7 @@ from datetime import datetime
 _exe_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 _log_path = os.path.join(_exe_dir, "hwp_worker_error.log")
 _image_cache_dir = os.path.join(_exe_dir, "_hwp_img_cache")
-WORKER_VERSION = "2026-03-04-imgfix4"
+WORKER_VERSION = "2026-03-04-imgfix5"
 
 try:
     import pythoncom
@@ -106,14 +106,13 @@ class HwpTemplateBuilder:
             pass
 
         last_err = None
-        # 환경에 따라 누름틀 내부/코드 위치 동작이 달라질 수 있어 둘 다 시도합니다.
+        # Start/End=True는 필드 전체를 선택해 안내문구만 지워질 수 있으므로 배제.
+        # "선택하지 않고 커서만 이동" 시그니처를 우선 사용.
         for args in (
-            (fieldname, True, True, True),
-            (fieldname, True, True, False),
-            (fieldname, False, True, True),
-            (fieldname, False, True, False),
-            (fieldname, True, True),
-            (fieldname, False, True),
+            (fieldname, True, False, False),
+            (fieldname, False, False, False),
+            (fieldname, True, False),
+            (fieldname, False, False),
             (fieldname, True),
             (fieldname, False),
             (fieldname,),
@@ -151,7 +150,7 @@ class HwpTemplateBuilder:
 
         # 0) named args 시도 (타입 라이브러리 매핑이 있는 환경에서 안정적)
         try:
-            self.hwp.InsertPicture(
+            ret = self.hwp.InsertPicture(
                 image_path,
                 Embedded=True,
                 sizeoption=1,
@@ -159,7 +158,8 @@ class HwpTemplateBuilder:
                 watermark=False,
                 effect=0,
             )
-            return True
+            if ret not in (False, 0):
+                return True
         except Exception as e:
             last_err = e
 
@@ -174,8 +174,9 @@ class HwpTemplateBuilder:
             (image_path,),
         ):
             try:
-                self.hwp.InsertPicture(*args)
-                return True
+                ret = self.hwp.InsertPicture(*args)
+                if ret not in (False, 0):
+                    return True
             except Exception as e:
                 last_err = e
 
@@ -197,8 +198,9 @@ class HwpTemplateBuilder:
                 pset.SizeOption = 1
             except Exception:
                 pass
-            self.hwp.HAction.Execute("InsertPicture", pset.HSet)
-            return True
+            ret = self.hwp.HAction.Execute("InsertPicture", pset.HSet)
+            if ret not in (False, 0):
+                return True
         except Exception as e:
             last_err = e
 
@@ -232,9 +234,13 @@ class HwpTemplateBuilder:
         # HWP가 클립보드를 인식할 시간 확보
         time.sleep(0.15)
         try:
-            self.hwp.Run("Paste")
+            ret = self.hwp.Run("Paste")
+            if ret in (False, 0):
+                return False
         except Exception:
-            self.hwp.HAction.Run("Paste")
+            ret = self.hwp.HAction.Run("Paste")
+            if ret in (False, 0):
+                return False
         # 붙여넣기 완료 대기
         time.sleep(0.1)
         return True
@@ -246,6 +252,11 @@ class HwpTemplateBuilder:
         try:
             if not self._move_to_field_for_image(fieldname):
                 return False
+            # 혹시 남아있을 수 있는 선택 상태 해제
+            try:
+                self.hwp.Run("Cancel")
+            except Exception:
+                pass
 
             raw = b64_data.split(",", 1)[1] if "," in b64_data else b64_data
             binary = base64.b64decode(raw)
@@ -262,18 +273,21 @@ class HwpTemplateBuilder:
                 tmp_path = tf.name
             _log(f"  [INFO] 이미지 캐시 파일 생성: {tmp_path}")
 
+            # 클립보드 방식을 우선 사용 (누름틀 위치 삽입에서 더 안정적인 환경이 있음)
+            buf = io.BytesIO()
+            img.save(buf, "BMP")
+            bmp_data = buf.getvalue()[14:]  # BMP 파일헤더 14바이트 제외
+            if self._put_image_by_clipboard(bmp_data):
+                _log(f"  [INFO] 이미지 필드 '{fieldname}' 삽입 완료(Clipboard)")
+                return True
+
+            # Clipboard 실패 시 InsertPicture 폴백
             if self._put_image_by_insertpicture(tmp_path):
                 _log(f"  [INFO] 이미지 필드 '{fieldname}' 삽입 완료(InsertPicture)")
                 return True
 
-            # InsertPicture 실패 시 클립보드 방식 폴백
-            buf = io.BytesIO()
-            img.save(buf, "BMP")
-            bmp_data = buf.getvalue()[14:]  # BMP 파일헤더 14바이트 제외
-
-            self._put_image_by_clipboard(bmp_data)
-            _log(f"  [INFO] 이미지 필드 '{fieldname}' 삽입 완료(Clipboard)")
-            return True
+            _log(f"  [WARN] 이미지 필드 '{fieldname}': Clipboard/InsertPicture 모두 실패")
+            return False
         except Exception as e:
             _log(f"  [WARN] 이미지 필드 '{fieldname}': {e}")
             return False
