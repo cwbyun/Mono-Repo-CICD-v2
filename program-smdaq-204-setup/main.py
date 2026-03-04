@@ -498,10 +498,13 @@ class MainWindow(QMainWindow):
                 response = self.server.query(command, on_line=on_line, event_pump=event_pump)
                 #if log : self.log_signal.emit(f"서버 응답: {response}")
                 return response
-            else:
+            elif self.client_active:
                 # 클라이언트 모드: 기존 방식대로 전송하고 응답 받기
                 ip, port = self.get_ip_port()
                 return send_command(command, ip, port, on_line=on_line, event_pump=event_pump)
+            else:
+                self.log_signal.emit("오류: 클라이언트 모드가 비활성 상태입니다. '클라이언트 시작' 버튼을 눌러주세요.")
+                return ""
         finally:
             if is_ui_thread:
                 self.set_app_status(self.idle_status_message)

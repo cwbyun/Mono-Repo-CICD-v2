@@ -154,6 +154,13 @@ def send_command(command: str, ip: str, port: int, on_line=None, event_pump=None
 
             sock.connect( (ip, port ) )
 
+            # 로거 접속 시 초기 이름/ID 메시지를 읽고 무시
+            try:
+                sock.settimeout(1.0)
+                sock.recv(256)
+            except socket.timeout:
+                pass  # 초기 메시지 없는 경우 무시
+
             sock.sendall( (command + "\n").encode("utf-8"))
 
             read_timeout = socket_timeout
