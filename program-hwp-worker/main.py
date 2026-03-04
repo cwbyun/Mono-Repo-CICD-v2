@@ -16,10 +16,12 @@ import threading
 import traceback
 import ctypes
 import time
+from datetime import datetime
 
 # 에러 로그 경로 (exe 실행 파일 옆에 생성)
 _exe_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 _log_path = os.path.join(_exe_dir, "hwp_worker_error.log")
+WORKER_VERSION = "2026-03-04-imgfix3"
 
 try:
     import pythoncom
@@ -43,6 +45,16 @@ TEMPLATE_PATH = os.path.join(_exe_dir, "template.hwp")
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB
+
+
+def _log(msg: str):
+    line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    print(line)
+    try:
+        with open(_log_path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 # ─── CORS (브라우저에서 직접 호출 허용) ───────────────────────────────────────
@@ -69,14 +81,24 @@ class HwpTemplateBuilder:
     def __init__(self):
         self.hwp = win32com.client.Dispatch("HWPFrame.HwpObject")
         self.hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
+        self._temp_image_files = []
+
+    def _cleanup_temp_images(self):
+        for path in self._temp_image_files:
+            try:
+                if path and os.path.exists(path):
+                    os.unlink(path)
+            except Exception:
+                pass
+        self._temp_image_files.clear()
 
     def _put_text(self, fieldname: str, text: str):
         """텍스트 누름틀 채우기."""
         try:
             self.hwp.PutFieldText(fieldname, str(text))
-            print(f"  [INFO] 텍스트 필드 '{fieldname}' = {text}")
+            _log(f"  [INFO] 텍스트 필드 '{fieldname}' = {text}")
         except Exception as e:
-            print(f"  [WARN] 텍스트 필드 '{fieldname}': {e}")
+            _log(f"  [WARN] 텍스트 필드 '{fieldname}': {e}")
 
     def _move_to_field_for_image(self, fieldname: str) -> bool:
         """
@@ -85,7 +107,7 @@ class HwpTemplateBuilder:
         """
         try:
             if hasattr(self.hwp, "FieldExist") and not self.hwp.FieldExist(fieldname):
-                print(f"  [WARN] 필드 '{fieldname}' 찾을 수 없음(FieldExist=False)")
+                _log(f"  [WARN] 필드 '{fieldname}' 찾을 수 없음(FieldExist=False)")
                 return False
         except Exception:
             # 일부 버전/환경에서는 FieldExist 호출이 불안정할 수 있어 무시하고 진행
@@ -124,9 +146,9 @@ class HwpTemplateBuilder:
                 last_err = e
 
         if last_err:
-            print(f"  [WARN] 필드 '{fieldname}' 이동 실패: {last_err}")
+            _log(f"  [WARN] 필드 '{fieldname}' 이동 실패: {last_err}")
         else:
-            print(f"  [WARN] 필드 '{fieldname}' 찾을 수 없음")
+            _log(f"  [WARN] 필드 '{fieldname}' 찾을 수 없음")
         return False
 
     def _put_image_by_insertpicture(self, image_path: str) -> bool:
@@ -136,14 +158,26 @@ class HwpTemplateBuilder:
         """
         last_err = None
 
+        # 0) named args 시도 (타입 라이브러리 매핑이 있는 환경에서 안정적)
+        try:
+            self.hwp.InsertPicture(
+                image_path,
+                Embedded=True,
+                sizeoption=1,
+                reverse=False,
+                watermark=False,
+                effect=0,
+            )
+            return True
+        except Exception as e:
+            last_err = e
+
         # 1) 객체 메서드 직접 호출
         for args in (
-            (image_path, True, 3),  # 셀 크기 맞춤 계열에서 자주 사용
-            (image_path, True, 1),  # 원본 비율 유지 계열
+            (image_path, True, 1, False, False, 0),
+            (image_path, True, 1, False, False, 0, 0, 0),
+            (image_path, True, 1),
             (image_path, True, 0),
-            (image_path, False, 3),
-            (image_path, False, 1),
-            (image_path, False, 0),
             (image_path, True),
             (image_path, False),
             (image_path,),
@@ -159,13 +193,22 @@ class HwpTemplateBuilder:
             self.hwp.HAction.GetDefault("InsertPicture", self.hwp.HParameterSet.HInsertPicture.HSet)
             pset = self.hwp.HParameterSet.HInsertPicture
             pset.FileName = image_path
+            # 버전에 따라 속성명이 다를 수 있어 가능한 값만 설정
+            try:
+                pset.Embedded = True
+            except Exception:
+                pass
+            try:
+                pset.SizeOption = 1
+            except Exception:
+                pass
             self.hwp.HAction.Execute("InsertPicture", pset.HSet)
             return True
         except Exception as e:
             last_err = e
 
         if last_err:
-            print(f"  [WARN] InsertPicture 실패: {last_err}")
+            _log(f"  [WARN] InsertPicture 실패: {last_err}")
         return False
 
     def _put_image_by_clipboard(self, bmp_data: bytes) -> bool:
@@ -182,7 +225,7 @@ class HwpTemplateBuilder:
             except Exception as clip_err:
                 if attempt == 4:
                     raise
-                print(f"  [WARN] 클립보드 재시도 {attempt+1}/5: {clip_err}")
+                _log(f"  [WARN] 클립보드 재시도 {attempt+1}/5: {clip_err}")
                 time.sleep(0.2)
             finally:
                 if opened:
@@ -205,7 +248,6 @@ class HwpTemplateBuilder:
         """이미지 누름틀에 클립보드로 이미지 삽입."""
         if not b64_data:
             return False
-        tmp_path = None
         try:
             if not self._move_to_field_for_image(fieldname):
                 return False
@@ -213,33 +255,28 @@ class HwpTemplateBuilder:
             raw = b64_data.split(",", 1)[1] if "," in b64_data else b64_data
             binary = base64.b64decode(raw)
 
-            # InsertPicture는 파일 경로 기반이라 임시 파일 우선 사용
+            # 확장자/포맷 불일치 이슈를 피하기 위해 실제 PNG로 재인코딩해서 저장
+            img = Image.open(io.BytesIO(binary)).convert("RGB")
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tf:
-                tf.write(binary)
+                img.save(tf, format="PNG")
                 tmp_path = tf.name
+            self._temp_image_files.append(tmp_path)
 
             if self._put_image_by_insertpicture(tmp_path):
-                print(f"  [INFO] 이미지 필드 '{fieldname}' 삽입 완료(InsertPicture)")
+                _log(f"  [INFO] 이미지 필드 '{fieldname}' 삽입 완료(InsertPicture)")
                 return True
 
             # InsertPicture 실패 시 클립보드 방식 폴백
-            img = Image.open(io.BytesIO(binary)).convert("RGB")
             buf = io.BytesIO()
             img.save(buf, "BMP")
             bmp_data = buf.getvalue()[14:]  # BMP 파일헤더 14바이트 제외
 
             self._put_image_by_clipboard(bmp_data)
-            print(f"  [INFO] 이미지 필드 '{fieldname}' 삽입 완료(Clipboard)")
+            _log(f"  [INFO] 이미지 필드 '{fieldname}' 삽입 완료(Clipboard)")
             return True
         except Exception as e:
-            print(f"  [WARN] 이미지 필드 '{fieldname}': {e}")
+            _log(f"  [WARN] 이미지 필드 '{fieldname}': {e}")
             return False
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
 
     def build(self, data: dict):
         """템플릿 열고 필드 채우기."""
@@ -284,8 +321,13 @@ class HwpTemplateBuilder:
             raise RuntimeError(f"이미지 삽입 실패 필드: {fail_fields}")
 
     def save(self, output_path: str):
-        self.hwp.SaveAs(output_path, "HWP", "")
-        self.hwp.Quit()
+        try:
+            self.hwp.SaveAs(output_path, "HWP", "")
+        finally:
+            try:
+                self.hwp.Quit()
+            finally:
+                self._cleanup_temp_images()
 
 
 # ─── Flask 엔드포인트 ──────────────────────────────────────────────────────────
@@ -300,18 +342,18 @@ def generate_hwp():
         return jsonify({"error": "요청 데이터 없음"}), 400
 
     output_path = tempfile.mktemp(suffix=".hwp")
-    print(f"[INFO] HWP 생성 시작 (이미지 {len(data.get('images', []))}장)")
+    _log(f"[INFO] HWP 생성 시작 (이미지 {len(data.get('images', []))}장, version={WORKER_VERSION})")
 
     try:
         builder = HwpTemplateBuilder()
         builder.build(data)
         builder.save(output_path)
-        print(f"[INFO] HWP 저장 완료: {output_path}")
+        _log(f"[INFO] HWP 저장 완료: {output_path}")
 
         with open(output_path, "rb") as f:
             hwp_bytes = f.read()
 
-        print(f"[INFO] 파일 크기: {len(hwp_bytes)} bytes")
+        _log(f"[INFO] 파일 크기: {len(hwp_bytes)} bytes")
         return Response(
             hwp_bytes,
             mimetype="application/octet-stream",
@@ -321,8 +363,12 @@ def generate_hwp():
             },
         )
     except Exception as e:
-        import traceback
         traceback.print_exc()
+        try:
+            with open(_log_path, "a", encoding="utf-8") as f:
+                traceback.print_exc(file=f)
+        except Exception:
+            pass
         return jsonify({"error": str(e)}), 500
     finally:
         pythoncom.CoUninitialize()
@@ -334,7 +380,7 @@ def generate_hwp():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "version": WORKER_VERSION})
 
 
 # ─── 진입점 ───────────────────────────────────────────────────────────────────
