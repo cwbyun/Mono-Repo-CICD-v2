@@ -83,19 +83,42 @@ class HwpTemplateBuilder:
         HWP COM 버전에 따라 MoveToField 인자 개수가 달라질 수 있으므로
         호환 가능한 시그니처를 순차 시도합니다.
         """
+        try:
+            if hasattr(self.hwp, "FieldExist") and not self.hwp.FieldExist(fieldname):
+                print(f"  [WARN] 필드 '{fieldname}' 찾을 수 없음(FieldExist=False)")
+                return False
+        except Exception:
+            # 일부 버전/환경에서는 FieldExist 호출이 불안정할 수 있어 무시하고 진행
+            pass
+
         last_err = None
-        # 이미지 삽입은 누름틀 "내용 위치(text=True)" 이동이 안정적입니다.
+        # 환경에 따라 누름틀 내부/코드 위치 동작이 달라질 수 있어 둘 다 시도합니다.
         for args in (
+            (fieldname, True, True, True),
             (fieldname, True, True, False),
+            (fieldname, False, True, True),
+            (fieldname, False, True, False),
             (fieldname, True, True),
+            (fieldname, False, True),
             (fieldname, True),
+            (fieldname, False),
             (fieldname,),
         ):
             try:
                 moved = self.hwp.MoveToField(*args)
-                # 일부 환경에서는 None을 반환해도 이동이 성공하므로 실패값만 제외
                 if moved in (False, 0):
                     continue
+                try:
+                    cur = self.hwp.GetCurFieldName()
+                    if cur:
+                        if cur == fieldname or cur.startswith(f"{fieldname}{{{{"):
+                            return True
+                    else:
+                        # 일부 경우 빈 문자열을 반환하지만 실제 이동은 완료됨
+                        return True
+                except Exception:
+                    # GetCurFieldName 미지원/오류 환경은 이동 성공으로 간주
+                    return True
                 return True
             except Exception as e:
                 last_err = e
@@ -106,50 +129,117 @@ class HwpTemplateBuilder:
             print(f"  [WARN] 필드 '{fieldname}' 찾을 수 없음")
         return False
 
+    def _put_image_by_insertpicture(self, image_path: str) -> bool:
+        """
+        클립보드 대신 InsertPicture API를 우선 사용.
+        버전별 시그니처 차이를 고려해 순차 시도.
+        """
+        last_err = None
+
+        # 1) 객체 메서드 직접 호출
+        for args in (
+            (image_path, True, 3),  # 셀 크기 맞춤 계열에서 자주 사용
+            (image_path, True, 1),  # 원본 비율 유지 계열
+            (image_path, True, 0),
+            (image_path, False, 3),
+            (image_path, False, 1),
+            (image_path, False, 0),
+            (image_path, True),
+            (image_path, False),
+            (image_path,),
+        ):
+            try:
+                self.hwp.InsertPicture(*args)
+                return True
+            except Exception as e:
+                last_err = e
+
+        # 2) 액션 기반 호출
+        try:
+            self.hwp.HAction.GetDefault("InsertPicture", self.hwp.HParameterSet.HInsertPicture.HSet)
+            pset = self.hwp.HParameterSet.HInsertPicture
+            pset.FileName = image_path
+            self.hwp.HAction.Execute("InsertPicture", pset.HSet)
+            return True
+        except Exception as e:
+            last_err = e
+
+        if last_err:
+            print(f"  [WARN] InsertPicture 실패: {last_err}")
+        return False
+
+    def _put_image_by_clipboard(self, bmp_data: bytes) -> bool:
+        """클립보드 + Paste 폴백 방식."""
+        # 클립보드 설정 (잠금 해제 재시도)
+        for attempt in range(5):
+            opened = False
+            try:
+                win32clipboard.OpenClipboard()
+                opened = True
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardData(win32clipboard.CF_DIB, bmp_data)
+                break
+            except Exception as clip_err:
+                if attempt == 4:
+                    raise
+                print(f"  [WARN] 클립보드 재시도 {attempt+1}/5: {clip_err}")
+                time.sleep(0.2)
+            finally:
+                if opened:
+                    try:
+                        win32clipboard.CloseClipboard()
+                    except Exception:
+                        pass
+
+        # HWP가 클립보드를 인식할 시간 확보
+        time.sleep(0.15)
+        try:
+            self.hwp.Run("Paste")
+        except Exception:
+            self.hwp.HAction.Run("Paste")
+        # 붙여넣기 완료 대기
+        time.sleep(0.1)
+        return True
+
     def _put_image(self, fieldname: str, b64_data: str):
         """이미지 누름틀에 클립보드로 이미지 삽입."""
         if not b64_data:
-            return
+            return False
+        tmp_path = None
         try:
             if not self._move_to_field_for_image(fieldname):
-                return
+                return False
 
-            # 이미지 → 클립보드 (BMP)
             raw = b64_data.split(",", 1)[1] if "," in b64_data else b64_data
-            img = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
+            binary = base64.b64decode(raw)
+
+            # InsertPicture는 파일 경로 기반이라 임시 파일 우선 사용
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tf:
+                tf.write(binary)
+                tmp_path = tf.name
+
+            if self._put_image_by_insertpicture(tmp_path):
+                print(f"  [INFO] 이미지 필드 '{fieldname}' 삽입 완료(InsertPicture)")
+                return True
+
+            # InsertPicture 실패 시 클립보드 방식 폴백
+            img = Image.open(io.BytesIO(binary)).convert("RGB")
             buf = io.BytesIO()
             img.save(buf, "BMP")
             bmp_data = buf.getvalue()[14:]  # BMP 파일헤더 14바이트 제외
 
-            # 클립보드 설정 (잠금 해제 재시도)
-            for attempt in range(5):
-                opened = False
-                try:
-                    win32clipboard.OpenClipboard()
-                    opened = True
-                    win32clipboard.EmptyClipboard()
-                    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, bmp_data)
-                    break
-                except Exception as clip_err:
-                    if attempt == 4:
-                        raise
-                    print(f"  [WARN] 클립보드 재시도 {attempt+1}/5: {clip_err}")
-                    time.sleep(0.2)
-                finally:
-                    if opened:
-                        try:
-                            win32clipboard.CloseClipboard()
-                        except Exception:
-                            pass
-
-            # HWP가 클립보드를 인식할 시간 확보
-            time.sleep(0.15)
-            self.hwp.HAction.Run("Paste")
-            # 붙여넣기 완료 대기
-            time.sleep(0.1)
-            print(f"  [INFO] 이미지 필드 '{fieldname}' 삽입 완료")
+            self._put_image_by_clipboard(bmp_data)
+            print(f"  [INFO] 이미지 필드 '{fieldname}' 삽입 완료(Clipboard)")
+            return True
         except Exception as e:
             print(f"  [WARN] 이미지 필드 '{fieldname}': {e}")
+            return False
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
 
     def build(self, data: dict):
         """템플릿 열고 필드 채우기."""
@@ -170,18 +260,28 @@ class HwpTemplateBuilder:
         # 이미지 필드 채우기
         # field 키가 있으면 해당 필드명 사용(도면 등), 없으면 pic1~pic8 자동 부여
         pic_counter = 1
+        image_failures = []
         for img in images:
             field_name = img.get("field")
             if field_name:
                 if img.get("data"):
-                    self._put_image(field_name, img["data"])
+                    ok = self._put_image(field_name, img["data"])
+                    if not ok:
+                        image_failures.append(field_name)
             else:
                 if pic_counter > 8:
                     break
                 if img.get("data"):
-                    self._put_image(f"pic{pic_counter}", img["data"])
+                    auto_field = f"pic{pic_counter}"
+                    ok = self._put_image(auto_field, img["data"])
+                    if not ok:
+                        image_failures.append(auto_field)
                 self._put_text(f"pic{pic_counter}_cap", img.get("caption", ""))
                 pic_counter += 1
+
+        if image_failures:
+            fail_fields = ", ".join(image_failures)
+            raise RuntimeError(f"이미지 삽입 실패 필드: {fail_fields}")
 
     def save(self, output_path: str):
         self.hwp.SaveAs(output_path, "HWP", "")
