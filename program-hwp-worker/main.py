@@ -15,6 +15,7 @@ import tempfile
 import threading
 import traceback
 import ctypes
+import time
 
 # 에러 로그 경로 (exe 실행 파일 옆에 생성)
 _exe_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
@@ -41,6 +42,7 @@ except Exception as _e:
 TEMPLATE_PATH = os.path.join(_exe_dir, "template.hwp")
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB
 
 
 # ─── CORS (브라우저에서 직접 호출 허용) ───────────────────────────────────────
@@ -94,12 +96,25 @@ class HwpTemplateBuilder:
             img.save(buf, "BMP")
             bmp_data = buf.getvalue()[14:]  # BMP 파일헤더 14바이트 제외
 
-            win32clipboard.OpenClipboard()
-            win32clipboard.EmptyClipboard()
-            win32clipboard.SetClipboardData(win32clipboard.CF_DIB, bmp_data)
-            win32clipboard.CloseClipboard()
+            # 클립보드 설정 (잠금 해제 재시도)
+            for attempt in range(5):
+                try:
+                    win32clipboard.OpenClipboard()
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, bmp_data)
+                    win32clipboard.CloseClipboard()
+                    break
+                except Exception as clip_err:
+                    if attempt == 4:
+                        raise
+                    print(f"  [WARN] 클립보드 재시도 {attempt+1}/5: {clip_err}")
+                    time.sleep(0.2)
 
+            # HWP가 클립보드를 인식할 시간 확보
+            time.sleep(0.15)
             self.hwp.HAction.Run("Paste")
+            # 붙여넣기 완료 대기
+            time.sleep(0.1)
             print(f"  [INFO] 이미지 필드 '{fieldname}' 삽입 완료")
         except Exception as e:
             print(f"  [WARN] 이미지 필드 '{fieldname}': {e}")
