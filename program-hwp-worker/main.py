@@ -108,15 +108,18 @@ class HwpTemplateBuilder:
         last_err = None
         # Start/End=True는 필드 전체를 선택해 안내문구만 지워질 수 있으므로 배제.
         # "선택하지 않고 커서만 이동" 시그니처를 우선 사용.
-        for args in (
+        # 실제 성공한 조합만 활성화.
+        # 나머지 후보는 필요 시 즉시 복구 가능하도록 주석으로 보존.
+        move_to_field_args = [
             (fieldname, True, False, False),
-            (fieldname, False, False, False),
-            (fieldname, True, False),
-            (fieldname, False, False),
-            (fieldname, True),
-            (fieldname, False),
-            (fieldname,),
-        ):
+            # (fieldname, False, False, False),
+            # (fieldname, True, False),
+            # (fieldname, False, False),
+            # (fieldname, True),
+            # (fieldname, False),
+            # (fieldname,),
+        ]
+        for args in move_to_field_args:
             try:
                 moved = self.hwp.MoveToField(*args)
                 if moved in (False, 0):
@@ -164,15 +167,18 @@ class HwpTemplateBuilder:
             last_err = e
 
         # 1) 객체 메서드 직접 호출
-        for args in (
+        # 실제 성공 조합은 Clipboard 경로였으므로 InsertPicture 후보는 최소 1개만 활성화.
+        # 나머지 후보는 필요 시 즉시 복구 가능하도록 주석으로 보존.
+        insert_picture_args = [
             (image_path, True, 1, False, False, 0),
-            (image_path, True, 1, False, False, 0, 0, 0),
-            (image_path, True, 1),
-            (image_path, True, 0),
-            (image_path, True),
-            (image_path, False),
-            (image_path,),
-        ):
+            # (image_path, True, 1, False, False, 0, 0, 0),
+            # (image_path, True, 1),
+            # (image_path, True, 0),
+            # (image_path, True),
+            # (image_path, False),
+            # (image_path,),
+        ]
+        for args in insert_picture_args:
             try:
                 ret = self.hwp.InsertPicture(*args)
                 if ret not in (False, 0):
