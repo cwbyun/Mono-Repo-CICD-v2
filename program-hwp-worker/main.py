@@ -120,16 +120,21 @@ class HwpTemplateBuilder:
         for fname, fvalue in fields.items():
             self._put_text(fname, fvalue)
 
-        # 도면 이미지 필드
-        field_picture = data.get("field_picture", "")
-        if field_picture:
-            self._put_image("field_picture", field_picture)
-
-        # 이미지 필드 채우기 (pic1~pic8)
-        for i, img in enumerate(images[:8], 1):
-            if img.get("data"):
-                self._put_image(f"pic{i}", img["data"])
-            self._put_text(f"pic{i}_cap", img.get("caption", ""))
+        # 이미지 필드 채우기
+        # field 키가 있으면 해당 필드명 사용(도면 등), 없으면 pic1~pic8 자동 부여
+        pic_counter = 1
+        for img in images:
+            field_name = img.get("field")
+            if field_name:
+                if img.get("data"):
+                    self._put_image(field_name, img["data"])
+            else:
+                if pic_counter > 8:
+                    break
+                if img.get("data"):
+                    self._put_image(f"pic{pic_counter}", img["data"])
+                self._put_text(f"pic{pic_counter}_cap", img.get("caption", ""))
+                pic_counter += 1
 
     def save(self, output_path: str):
         self.hwp.SaveAs(output_path, "HWP", "")
