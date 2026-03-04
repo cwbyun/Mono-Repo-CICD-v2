@@ -21,7 +21,8 @@ from datetime import datetime
 # 에러 로그 경로 (exe 실행 파일 옆에 생성)
 _exe_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 _log_path = os.path.join(_exe_dir, "hwp_worker_error.log")
-WORKER_VERSION = "2026-03-04-imgfix3"
+_image_cache_dir = os.path.join(_exe_dir, "_hwp_img_cache")
+WORKER_VERSION = "2026-03-04-imgfix4"
 
 try:
     import pythoncom
@@ -45,6 +46,7 @@ TEMPLATE_PATH = os.path.join(_exe_dir, "template.hwp")
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB
+os.makedirs(_image_cache_dir, exist_ok=True)
 
 
 def _log(msg: str):
@@ -81,16 +83,6 @@ class HwpTemplateBuilder:
     def __init__(self):
         self.hwp = win32com.client.Dispatch("HWPFrame.HwpObject")
         self.hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
-        self._temp_image_files = []
-
-    def _cleanup_temp_images(self):
-        for path in self._temp_image_files:
-            try:
-                if path and os.path.exists(path):
-                    os.unlink(path)
-            except Exception:
-                pass
-        self._temp_image_files.clear()
 
     def _put_text(self, fieldname: str, text: str):
         """텍스트 누름틀 채우기."""
@@ -132,16 +124,15 @@ class HwpTemplateBuilder:
                     continue
                 try:
                     cur = self.hwp.GetCurFieldName()
-                    if cur:
-                        if cur == fieldname or cur.startswith(f"{fieldname}{{{{"):
-                            return True
-                    else:
-                        # 일부 경우 빈 문자열을 반환하지만 실제 이동은 완료됨
+                    if cur == fieldname or (cur and cur.startswith(f"{fieldname}{{{{")):
+                        _log(f"  [INFO] 필드 이동 성공 '{fieldname}' args={args} cur='{cur}'")
                         return True
+                    _log(f"  [WARN] 필드 이동 불일치 target='{fieldname}' args={args} cur='{cur}'")
+                    continue
                 except Exception:
                     # GetCurFieldName 미지원/오류 환경은 이동 성공으로 간주
+                    _log(f"  [INFO] 필드 이동 성공(검증불가) '{fieldname}' args={args}")
                     return True
-                return True
             except Exception as e:
                 last_err = e
 
@@ -196,6 +187,10 @@ class HwpTemplateBuilder:
             # 버전에 따라 속성명이 다를 수 있어 가능한 값만 설정
             try:
                 pset.Embedded = True
+            except Exception:
+                pass
+            try:
+                pset.Embeded = True
             except Exception:
                 pass
             try:
@@ -257,10 +252,15 @@ class HwpTemplateBuilder:
 
             # 확장자/포맷 불일치 이슈를 피하기 위해 실제 PNG로 재인코딩해서 저장
             img = Image.open(io.BytesIO(binary)).convert("RGB")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tf:
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".png",
+                prefix="hwp_img_",
+                dir=_image_cache_dir,
+            ) as tf:
                 img.save(tf, format="PNG")
                 tmp_path = tf.name
-            self._temp_image_files.append(tmp_path)
+            _log(f"  [INFO] 이미지 캐시 파일 생성: {tmp_path}")
 
             if self._put_image_by_insertpicture(tmp_path):
                 _log(f"  [INFO] 이미지 필드 '{fieldname}' 삽입 완료(InsertPicture)")
@@ -326,8 +326,8 @@ class HwpTemplateBuilder:
         finally:
             try:
                 self.hwp.Quit()
-            finally:
-                self._cleanup_temp_images()
+            except Exception:
+                pass
 
 
 # ─── Flask 엔드포인트 ──────────────────────────────────────────────────────────
