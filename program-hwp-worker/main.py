@@ -37,12 +37,8 @@ except Exception as _e:
     )
     sys.exit(1)
 
-# exe로 빌드된 경우 번들 내부 경로, 스크립트 실행 시 파일 위치 기준
-if getattr(sys, "frozen", False):
-    BASE_DIR = sys._MEIPASS  # PyInstaller 임시 압축 해제 폴더
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TEMPLATE_PATH = os.path.join(BASE_DIR, "template.hwp")
+# template.hwp는 exe(또는 스크립트) 옆에 두어야 합니다 — 직원이 직접 교체 가능
+TEMPLATE_PATH = os.path.join(_exe_dir, "template.hwp")
 
 app = Flask(__name__)
 
@@ -110,6 +106,11 @@ class HwpTemplateBuilder:
 
     def build(self, data: dict):
         """템플릿 열고 필드 채우기."""
+        if not os.path.exists(TEMPLATE_PATH):
+            raise FileNotFoundError(
+                f"template.hwp 파일이 없습니다.\n"
+                f"아래 경로에 template.hwp를 복사하세요:\n{TEMPLATE_PATH}"
+            )
         self.hwp.Open(TEMPLATE_PATH, "HWP", "")
 
         fields = data.get("fields", {})
@@ -118,6 +119,11 @@ class HwpTemplateBuilder:
         # 텍스트 필드 채우기
         for fname, fvalue in fields.items():
             self._put_text(fname, fvalue)
+
+        # 도면 이미지 필드
+        field_picture = data.get("field_picture", "")
+        if field_picture:
+            self._put_image("field_picture", field_picture)
 
         # 이미지 필드 채우기 (pic1~pic8)
         for i, img in enumerate(images[:8], 1):
