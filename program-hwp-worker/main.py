@@ -78,15 +78,40 @@ class HwpTemplateBuilder:
         except Exception as e:
             print(f"  [WARN] 텍스트 필드 '{fieldname}': {e}")
 
+    def _move_to_field_for_image(self, fieldname: str) -> bool:
+        """
+        HWP COM 버전에 따라 MoveToField 인자 개수가 달라질 수 있으므로
+        호환 가능한 시그니처를 순차 시도합니다.
+        """
+        last_err = None
+        # 이미지 삽입은 누름틀 "내용 위치(text=True)" 이동이 안정적입니다.
+        for args in (
+            (fieldname, True, True, False),
+            (fieldname, True, True),
+            (fieldname, True),
+            (fieldname,),
+        ):
+            try:
+                moved = self.hwp.MoveToField(*args)
+                # 일부 환경에서는 None을 반환해도 이동이 성공하므로 실패값만 제외
+                if moved in (False, 0):
+                    continue
+                return True
+            except Exception as e:
+                last_err = e
+
+        if last_err:
+            print(f"  [WARN] 필드 '{fieldname}' 이동 실패: {last_err}")
+        else:
+            print(f"  [WARN] 필드 '{fieldname}' 찾을 수 없음")
+        return False
+
     def _put_image(self, fieldname: str, b64_data: str):
         """이미지 누름틀에 클립보드로 이미지 삽입."""
         if not b64_data:
             return
         try:
-            # 필드로 이동 (선택 상태) — Text=False: 그림 누름틀(이미지 필드) 검색
-            moved = self.hwp.MoveToField(fieldname, False, True, True)
-            if not moved:
-                print(f"  [WARN] 필드 '{fieldname}' 찾을 수 없음")
+            if not self._move_to_field_for_image(fieldname):
                 return
 
             # 이미지 → 클립보드 (BMP)
@@ -98,17 +123,24 @@ class HwpTemplateBuilder:
 
             # 클립보드 설정 (잠금 해제 재시도)
             for attempt in range(5):
+                opened = False
                 try:
                     win32clipboard.OpenClipboard()
+                    opened = True
                     win32clipboard.EmptyClipboard()
                     win32clipboard.SetClipboardData(win32clipboard.CF_DIB, bmp_data)
-                    win32clipboard.CloseClipboard()
                     break
                 except Exception as clip_err:
                     if attempt == 4:
                         raise
                     print(f"  [WARN] 클립보드 재시도 {attempt+1}/5: {clip_err}")
                     time.sleep(0.2)
+                finally:
+                    if opened:
+                        try:
+                            win32clipboard.CloseClipboard()
+                        except Exception:
+                            pass
 
             # HWP가 클립보드를 인식할 시간 확보
             time.sleep(0.15)
