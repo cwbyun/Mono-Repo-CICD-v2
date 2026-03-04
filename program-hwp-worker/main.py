@@ -106,12 +106,12 @@ class HwpTemplateBuilder:
             pass
 
         last_err = None
-        # Start/End=True는 필드 전체를 선택해 안내문구만 지워질 수 있으므로 배제.
-        # "선택하지 않고 커서만 이동" 시그니처를 우선 사용.
-        # 실제 성공한 조합만 활성화.
+        # 이미지는 누름틀 내부를 블록 선택한 뒤 치환하는 방식이 위치가 가장 안정적입니다.
+        # 실제 적용 조합만 활성화.
         # 나머지 후보는 필요 시 즉시 복구 가능하도록 주석으로 보존.
         move_to_field_args = [
-            (fieldname, True, False, False),
+            (fieldname, True, True, True),
+            # (fieldname, True, False, False),
             # (fieldname, False, False, False),
             # (fieldname, True, False),
             # (fieldname, False, False),
@@ -258,11 +258,6 @@ class HwpTemplateBuilder:
         try:
             if not self._move_to_field_for_image(fieldname):
                 return False
-            # 혹시 남아있을 수 있는 선택 상태 해제
-            try:
-                self.hwp.Run("Cancel")
-            except Exception:
-                pass
 
             raw = b64_data.split(",", 1)[1] if "," in b64_data else b64_data
             binary = base64.b64decode(raw)
