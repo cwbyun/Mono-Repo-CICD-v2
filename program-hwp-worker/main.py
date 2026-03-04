@@ -22,7 +22,7 @@ from datetime import datetime
 _exe_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 _log_path = os.path.join(_exe_dir, "hwp_worker_error.log")
 _image_cache_dir = os.path.join(_exe_dir, "_hwp_img_cache")
-WORKER_VERSION = "2026-03-04-imgfix5"
+WORKER_VERSION = "2026-03-04-imgfix6-clean"
 
 try:
     import pythoncom
@@ -88,15 +88,11 @@ class HwpTemplateBuilder:
         """텍스트 누름틀 채우기."""
         try:
             self.hwp.PutFieldText(fieldname, str(text))
-            _log(f"  [INFO] 텍스트 필드 '{fieldname}' = {text}")
         except Exception as e:
             _log(f"  [WARN] 텍스트 필드 '{fieldname}': {e}")
 
     def _move_to_field_for_image(self, fieldname: str) -> bool:
-        """
-        HWP COM 버전에 따라 MoveToField 인자 개수가 달라질 수 있으므로
-        호환 가능한 시그니처를 순차 시도합니다.
-        """
+        """이미지 누름틀 위치로 이동(실제 성공한 시그니처만 사용)."""
         try:
             if hasattr(self.hwp, "FieldExist") and not self.hwp.FieldExist(fieldname):
                 _log(f"  [WARN] 필드 '{fieldname}' 찾을 수 없음(FieldExist=False)")
@@ -105,93 +101,39 @@ class HwpTemplateBuilder:
             # 일부 버전/환경에서는 FieldExist 호출이 불안정할 수 있어 무시하고 진행
             pass
 
-        last_err = None
-        # 이미지는 누름틀 내부를 블록 선택한 뒤 치환하는 방식이 위치가 가장 안정적입니다.
-        # 실제 적용 조합만 활성화.
-        # 나머지 후보는 필요 시 즉시 복구 가능하도록 주석으로 보존.
-        move_to_field_args = [
-            (fieldname, True, True, True),
-            # (fieldname, True, False, False),
-            # (fieldname, False, False, False),
-            # (fieldname, True, False),
-            # (fieldname, False, False),
-            # (fieldname, True),
-            # (fieldname, False),
-            # (fieldname,),
-        ]
-        for args in move_to_field_args:
-            try:
-                moved = self.hwp.MoveToField(*args)
-                if moved in (False, 0):
-                    continue
-                try:
-                    cur = self.hwp.GetCurFieldName()
-                    if cur == fieldname or (cur and cur.startswith(f"{fieldname}{{{{")):
-                        _log(f"  [INFO] 필드 이동 성공 '{fieldname}' args={args} cur='{cur}'")
-                        return True
-                    _log(f"  [WARN] 필드 이동 불일치 target='{fieldname}' args={args} cur='{cur}'")
-                    continue
-                except Exception:
-                    # GetCurFieldName 미지원/오류 환경은 이동 성공으로 간주
-                    _log(f"  [INFO] 필드 이동 성공(검증불가) '{fieldname}' args={args}")
-                    return True
-            except Exception as e:
-                last_err = e
-
-        if last_err:
-            _log(f"  [WARN] 필드 '{fieldname}' 이동 실패: {last_err}")
-        else:
-            _log(f"  [WARN] 필드 '{fieldname}' 찾을 수 없음")
-        return False
+        try:
+            moved = self.hwp.MoveToField(fieldname, True, True, True)
+            if moved in (False, 0):
+                _log(f"  [WARN] 필드 '{fieldname}' 이동 실패: MoveToField returned {moved}")
+                return False
+            return True
+        except Exception as e:
+            _log(f"  [WARN] 필드 '{fieldname}' 이동 실패: {e}")
+            return False
 
     def _put_image_by_insertpicture(self, image_path: str) -> bool:
-        """
-        클립보드 대신 InsertPicture API를 우선 사용.
-        버전별 시그니처 차이를 고려해 순차 시도.
-        """
+        """Clipboard 실패 시 폴백용 InsertPicture."""
         last_err = None
 
-        # 0) named args 시도 (타입 라이브러리 매핑이 있는 환경에서 안정적)
         try:
             ret = self.hwp.InsertPicture(
                 image_path,
-                Embedded=True,
-                sizeoption=1,
-                reverse=False,
-                watermark=False,
-                effect=0,
+                True,
+                1,
+                False,
+                False,
+                0,
             )
             if ret not in (False, 0):
                 return True
         except Exception as e:
             last_err = e
 
-        # 1) 객체 메서드 직접 호출
-        # 실제 성공 조합은 Clipboard 경로였으므로 InsertPicture 후보는 최소 1개만 활성화.
-        # 나머지 후보는 필요 시 즉시 복구 가능하도록 주석으로 보존.
-        insert_picture_args = [
-            (image_path, True, 1, False, False, 0),
-            # (image_path, True, 1, False, False, 0, 0, 0),
-            # (image_path, True, 1),
-            # (image_path, True, 0),
-            # (image_path, True),
-            # (image_path, False),
-            # (image_path,),
-        ]
-        for args in insert_picture_args:
-            try:
-                ret = self.hwp.InsertPicture(*args)
-                if ret not in (False, 0):
-                    return True
-            except Exception as e:
-                last_err = e
-
-        # 2) 액션 기반 호출
+        # 일부 환경에서는 액션 기반 호출이 더 안정적입니다.
         try:
             self.hwp.HAction.GetDefault("InsertPicture", self.hwp.HParameterSet.HInsertPicture.HSet)
             pset = self.hwp.HParameterSet.HInsertPicture
             pset.FileName = image_path
-            # 버전에 따라 속성명이 다를 수 있어 가능한 값만 설정
             try:
                 pset.Embedded = True
             except Exception:
@@ -272,9 +214,8 @@ class HwpTemplateBuilder:
             ) as tf:
                 img.save(tf, format="PNG")
                 tmp_path = tf.name
-            _log(f"  [INFO] 이미지 캐시 파일 생성: {tmp_path}")
 
-            # 클립보드 방식을 우선 사용 (누름틀 위치 삽입에서 더 안정적인 환경이 있음)
+            # 현재 운영 환경에서 안정적으로 동작한 경로
             buf = io.BytesIO()
             img.save(buf, "BMP")
             bmp_data = buf.getvalue()[14:]  # BMP 파일헤더 14바이트 제외
